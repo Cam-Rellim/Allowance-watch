@@ -1,7 +1,6 @@
-// Minimal list of supported chains
-import { mainnet, base, arbitrum, bsc, avalanche } from "viem/chains";
+import { mainnet, base, arbitrum, bsc, avalanche } from 'viem/chains';
 
-export const CHAINS = [mainnet, base, arbitrum, bsc, avalanche];
+export const CHAINS = [base, arbitrum, bsc, avalanche, mainnet]; // prioritize L2s/alt L1s
 
 export const CHAIN_BY_ID: Record<number, typeof mainnet> = {
   [mainnet.id]: mainnet,
@@ -11,4 +10,4 @@ export const CHAIN_BY_ID: Record<number, typeof mainnet> = {
   [avalanche.id]: avalanche,
 };
 
-export const DEFAULT_CHAIN_ID = mainnet.id;
+export const DEFAULT_CHAIN_ID = base.id; // default to Base
