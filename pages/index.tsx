@@ -25,8 +25,6 @@ export default function Home() {
   const [scanAll, setScanAll] = useState<boolean>(true); // default: scan across all chains
   const [status, setStatus] = useState<Status>('idle');
   const [findings, setFindings] = useState<Finding[]>([]);
-  const [pairsChecked, setPairsChecked] = useState<number>(0);
-  const [elapsedMs, setElapsedMs] = useState<number>(0);
 
   const selectedChain = useMemo(() => CHAINS.find(c => c.id === chainId)!, [chainId]);
 
@@ -38,13 +36,8 @@ export default function Home() {
     }
     setStatus('scanning');
     setFindings([]);
-    setPairsChecked(0);
-    setElapsedMs(0);
 
-    const start = performance.now();
     const chainIds = scanAll ? CHAINS.map(c => c.id) : [chainId];
-
-    let checked = 0;
     const out: Finding[] = [];
 
     try {
@@ -73,7 +66,6 @@ export default function Home() {
           );
 
           allowances.forEach((allowance, i) => {
-            checked++;
             if (allowance > 0n) {
               const sp = spenders[i];
               out.push({
@@ -89,12 +81,10 @@ export default function Home() {
           });
         }
       }
-      setFindings(out.sort((a, b) => (a.chainName < b.chainName ? -1 : 1)));
-      setPairsChecked(checked);
+      setFindings(out.sort((a, b) => a.chainName.localeCompare(b.chainName) || a.tokenSymbol.localeCompare(b.tokenSymbol)));
     } catch (e: any) {
       alert('Scan failed: ' + (e?.message || String(e)));
     } finally {
-      setElapsedMs(Math.max(1, Math.round(performance.now() - start)));
       setStatus('done');
     }
   }
@@ -109,7 +99,7 @@ export default function Home() {
       <Head><title>Allowance Watch</title></Head>
       <main style={{ maxWidth: 900, margin: '0 auto', padding: 16 }}>
         <h1>Allowance Watch</h1>
-        <p>Scan ERC-20 allowances across Base, Arbitrum, BNB, Avalanche, and Ethereum. “Scan all chains” is on by default.</p>
+        <p>Scan ERC-20 allowances across Base, Arbitrum, BNB, Avalanche, and Ethereum.</p>
 
         <label htmlFor="owner">Wallet address</label>
         <input
@@ -132,7 +122,7 @@ export default function Home() {
             {CHAINS.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
 
-          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 14 }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 14 }}>
             <input type="checkbox" checked={scanAll} onChange={e => setScanAll(e.target.checked)} />
             Scan all chains
           </label>
@@ -146,17 +136,21 @@ export default function Home() {
           </button>
         </div>
 
-        <div style={{ marginTop: 12, fontSize: 12, color: '#6b7280' }}>
-          Tokens checked: USDC + wrapped native per chain · Spenders: Uniswap routers & Permit2
-          {status !== 'idle' && (
-            <span> · Pairs scanned: {pairsChecked} · Found approvals: {findings.length} · {elapsedMs}ms</span>
-          )}
-        </div>
-
+        {/* Results area */}
         <section style={{ marginTop: 16 }}>
-          {findings.length === 0 ? (
+          {status === 'idle' && (
+            <div style={{ color: '#6b7280' }}>Enter a wallet and press Scan.</div>
+          )}
+
+          {status === 'scanning' && (
+            <div style={{ color: '#6b7280' }}>Scanning… this may take a few seconds.</div>
+          )}
+
+          {status === 'done' && findings.length === 0 && (
             <div className="empty">No approvals &gt; 0 found for the configured tokens/spenders.</div>
-          ) : (
+          )}
+
+          {status === 'done' && findings.length > 0 && (
             <table className="table">
               <thead>
                 <tr>
@@ -186,14 +180,6 @@ export default function Home() {
           th { background: #f9fafb; }
           .empty { margin-top: 12px; color: #6b7280; }
         `}</style>
-
-        <section style={{ marginTop: 24 }}>
-          <h3>Notes</h3>
-          <ul>
-            <li>Public RPCs are OK to start; upgrade to a provider for reliability.</li>
-            <li>Add more tokens/spenders in <code>/config/*.ts</code> to widen coverage.</li>
-          </ul>
-        </section>
       </main>
     </>
   );
