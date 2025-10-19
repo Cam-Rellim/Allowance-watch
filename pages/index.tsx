@@ -1,188 +1,176 @@
-import { useMemo, useState } from 'react';
-import Head from 'next/head';
-import { isAddress, formatUnits, type Address } from 'viem';
-import { useAccount, useConnect, useWriteContract } from 'wagmi';
-import { getPublicClient } from '../lib/networks';
-import { ERC20_ABI } from '../lib/erc20';
-import { TOKENS } from '../config/tokens';
-import { SPENDERS } from '../config/spenders';
-import { AllowanceTable } from '../components/AllowanceTable';
-
-const MAX_UINT256 = (2n ** 256n) - 1n;
+import { useState, useMemo } from "react";
+import Head from "next/head";
+import { erc20Abi } from "../lib/erc20";
+import { getPublicClient } from "../lib/networks";
+import { CHAINS, DEFAULT_CHAIN_ID } from "../config/chains";
+import { TOKENS_BY_CHAIN, Token } from "../config/tokens";
+import { SPENDERS_BY_CHAIN, Spender } from "../config/spenders";
+import { formatUnits, isAddress } from "viem";
+import { useAccount, useConnect } from "wagmi";
+import { MetaMaskConnector } from "wagmi/connectors/metaMask";
 
 type Finding = {
-  token: string;
-  tokenAddress: Address;
-  spenderName: string;
-  spenderAddress: Address;
-  allowance: bigint;
-  decimals: number;
-  risk: 'LOW' | 'MEDIUM' | 'HIGH';
-  suggestion: string;
+  chainId: number;
+  token: Token;
+  spender: Spender;
+  allowance: string;
+  raw: bigint;
 };
 
-function classifyRisk(allowance: bigint, decimals: number): 'LOW' | 'MEDIUM' | 'HIGH' {
-  if (allowance === 0n) return 'LOW';
-  if (allowance > MAX_UINT256 - 1000n) return 'HIGH'; // effectively unlimited
-  const unit = 10n ** BigInt(decimals);
-  if (allowance > unit * 1000n) return 'HIGH';
-  if (allowance > unit * 10n) return 'MEDIUM';
-  return 'LOW';
-}
-
 export default function Home() {
-  const [owner, setOwner] = useState('');
-  const [loading, setLoading] = useState(false);
+  const [owner, setOwner] = useState<string>("0xfe99f53446cf89ffa36bd0ff12526265e3e7593d");
+  const [chainId, setChainId] = useState<number>(DEFAULT_CHAIN_ID);
   const [findings, setFindings] = useState<Finding[]>([]);
-
+  const [loading, setLoading] = useState(false);
   const { address: connectedAddress } = useAccount();
-  const { connectors, connect } = useConnect();
-  const { writeContractAsync } = useWriteContract();
+  const { connect, connectors } = useConnect();
 
-  const publicClient = useMemo(() => getPublicClient('ethereum'), []);
+  const selectedChain = useMemo(() => CHAINS.find(c => c.id === chainId)!, [chainId]);
 
   async function scan() {
-    setFindings([]);
-    const ownerAddr = owner.trim() as Address;
-    if (!isAddress(ownerAddr)) {
-      alert('Please enter a valid EVM address.');
+    if (!isAddress(owner)) {
+      alert("Enter a valid wallet address");
       return;
     }
     setLoading(true);
-    try {
-      const results: Finding[] = [];
-      for (const token of TOKENS) {
-        const [decimals, symbol] = await Promise.all([
-          publicClient.readContract({
-            address: token.address as Address,
-            abi: ERC20_ABI,
-            functionName: 'decimals',
-            args: [],
-          }) as Promise<number>,
-          publicClient.readContract({
-            address: token.address as Address,
-            abi: ERC20_ABI,
-            functionName: 'symbol',
-            args: [],
-          }) as Promise<string>,
-        ]);
+    setFindings([]);
 
-        const allowances = await Promise.all(
-          SPENDERS.map(spender =>
-            publicClient.readContract({
-              address: token.address as Address,
-              abi: ERC20_ABI,
-              functionName: 'allowance',
-              args: [ownerAddr, spender.address as Address],
-            }) as Promise<bigint>
-          )
+    try {
+      const client = getPublicClient(chainId);
+      const tokens = TOKENS_BY_CHAIN[chainId] ?? [];
+      const spenders = SPENDERS_BY_CHAIN[chainId] ?? [];
+
+      const out: Finding[] = [];
+      for (const token of tokens) {
+        // decimals to format nicely
+        const decimals: number = Number(
+          await client.readContract({
+            address: token.address,
+            abi: erc20Abi,
+            functionName: "decimals",
+          })
         );
 
-        allowances.forEach((allowance, i) => {
+        for (const spender of spenders) {
+          const allowance: bigint = await client.readContract({
+            address: token.address,
+            abi: erc20Abi,
+            functionName: "allowance",
+            args: [owner as `0x${string}`, spender.address],
+          });
           if (allowance > 0n) {
-            const spender = SPENDERS[i];
-            const risk = classifyRisk(allowance, decimals);
-            const suggestion =
-              risk === 'HIGH' ? 'Revoke or reduce to exact need.' :
-              risk === 'MEDIUM' ? 'Consider reducing to a tighter cap.' :
-              'OK';
-            results.push({
-              token: symbol,
-              tokenAddress: token.address as Address,
-              spenderName: spender.name,
-              spenderAddress: spender.address as Address,
-              allowance,
-              decimals,
-              risk,
-              suggestion
+            out.push({
+              chainId,
+              token,
+              spender,
+              allowance: formatUnits(allowance, decimals),
+              raw: allowance,
             });
           }
-        });
+        }
       }
-      setFindings(results);
+      // sort largest first
+      out.sort((a, b) => (a.raw > b.raw ? -1 : 1));
+      setFindings(out);
+    } catch (e: any) {
+      console.error(e);
+      alert(`Scan failed: ${e?.message ?? e}`);
     } finally {
       setLoading(false);
     }
   }
 
   async function revoke(row: Finding) {
-    // Ensure a connector is available and connect if needed (Injected / MetaMask)
-    const connector = connectors.find(c => c.id === 'injected') ?? connectors[0];
-    if (connector && !connectedAddress) {
-      await connect({ connector });
+    // Ensure wallet connected to SAME chain; if not, prompt MetaMask
+    if (!connectedAddress) {
+      const inj = connectors.find(c => c.id === "metaMask");
+      if (inj) await connect({ connector: inj as unknown as MetaMaskConnector });
     }
-    try {
-      await writeContractAsync({
-        address: row.tokenAddress,
-        abi: ERC20_ABI,
-        functionName: 'approve',
-        args: [row.spenderAddress, 0n],
-      });
-      alert('Revoke transaction sent. It may take a moment to confirm.');
-    } catch (e: any) {
-      alert('Failed to send revoke: ' + (e?.message || String(e)));
-    }
+    alert("For now, open this site in your wallet's in-app browser (MetaMask) and use your wallet UI to revoke the approval for the spender shown.");
   }
 
   return (
     <>
-      <Head><title>Allowance Watch</title></Head>
-      <main style={{ maxWidth: 900, margin: '0 auto', padding: 16 }}>
-        <h1>Allowance Watch</h1>
-        <p>Scan your wallet for risky ERC-20 approvals (Ethereum). You control revokes via your wallet.</p>
+      <Head>
+        <title>Allowance Watch</title>
+      </Head>
+      <main style={{ maxWidth: 720, margin: "0 auto", padding: "24px" }}>
+        <h1 style={{ fontSize: 42, fontWeight: 800, marginBottom: 16 }}>Allowance Watch</h1>
+        <p>Scan ERC-20 approvals and flag common high-risk spenders (Uniswap routers & Permit2).</p>
 
-        <label htmlFor="owner">Wallet address</label>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <input
-            id="owner"
-            placeholder="0x..."
-            value={owner}
-            onChange={e => setOwner(e.target.value)}
-            style={{ flex: 1, padding: 12, border: '1px solid #e5e7eb', borderRadius: 10, fontSize: 16 }}
-          />
-          <button
-            onClick={scan}
-            disabled={loading}
-            style={{ padding: '12px 16px', borderRadius: 10, border: '1px solid #111827', background: loading ? '#e5e7eb' : 'white' }}
-          >
-            {loading ? 'Scanning…' : 'Scan'}
-          </button>
+        <label style={{ display: "block", marginTop: 16, fontWeight: 600 }}>Wallet address</label>
+        <input
+          value={owner}
+          onChange={(e) => setOwner(e.target.value)}
+          style={{ width: "100%", padding: 12, borderRadius: 8, marginTop: 6 }}
+          placeholder="0x..."
+        />
+
+        <label style={{ display: "block", marginTop: 16, fontWeight: 600 }}>Network</label>
+        <select
+          value={chainId}
+          onChange={(e) => setChainId(Number(e.target.value))}
+          style={{ width: "100%", padding: 12, borderRadius: 8, marginTop: 6 }}
+        >
+          {CHAINS.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.name}
+            </option>
+          ))}
+        </select>
+
+        <button
+          onClick={scan}
+          disabled={loading}
+          style={{
+            marginTop: 16,
+            padding: "12px 16px",
+            borderRadius: 8,
+            fontWeight: 700,
+            opacity: loading ? 0.6 : 1,
+          }}
+        >
+          {loading ? "Scanning..." : "Scan"}
+        </button>
+
+        <div style={{ marginTop: 24 }}>
+          {findings.length === 0 ? (
+            <p>No approvals > 0 found for the configured tokens/spenders on {selectedChain.name}.</p>
+          ) : (
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr>
+                  <th align="left">Chain</th>
+                  <th align="left">Token</th>
+                  <th align="left">Spender</th>
+                  <th align="right">Allowance</th>
+                  <th align="right">Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {findings.map((f, i) => (
+                  <tr key={i}>
+                    <td>{selectedChain.name}</td>
+                    <td>{f.token.symbol}</td>
+                    <td title={f.spender.address}>{f.spender.label}</td>
+                    <td align="right">{f.allowance}</td>
+                    <td align="right">
+                      <button onClick={() => revoke(f)}>Revoke</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
         </div>
 
-        <div style={{ marginTop: 12, fontSize: 12, color: '#6b7280' }}>
-          Tokens checked: {TOKENS.map(t => t.symbol).join(', ')} · Spenders: {SPENDERS.map(s => s.name).join(', ') || 'none set'}
-        </div>
-
-        <section style={{ marginTop: 16 }}>
-          <AllowanceTable
-            rows={findings.map(f => ({
-              token: f.token,
-              tokenAddress: f.tokenAddress,
-              spenderName: f.spenderName,
-              spenderAddress: f.spenderAddress,
-              allowance: `${formatUnits(f.allowance, f.decimals)} ${f.token}`,
-              risk: f.risk,
-              suggestion: f.suggestion
-            }))}
-            onRevoke={(r) => {
-              const match = findings.find(f =>
-                f.token === r.token &&
-                f.spenderAddress.toLowerCase() === r.spenderAddress.toLowerCase()
-              );
-              if (match) revoke(match);
-            }}
-          />
-        </section>
-
-        <section style={{ marginTop: 24 }}>
-          <h3>Notes</h3>
-          <ul>
-            <li>Start with the pre-filled tokens; add more in <code>/config/*.ts</code> (verify from official docs).</li>
-            <li>Risk levels are heuristics. Always double-check before revoking.</li>
-            <li>On mobile, open this site inside your wallet’s in-app browser (MetaMask) to sign revokes.</li>
-          </ul>
-        </section>
+        <h2 style={{ marginTop: 28 }}>Notes</h2>
+        <ul>
+          <li>Routers & Permit2 addresses are from Uniswap’s official deployment pages.</li>
+          <li>USDC addresses are from Circle’s official address list.</li>
+          <li>To sign revokes, open this site in your wallet’s in-app browser (MetaMask/Trust) on the same network.</li>
+        </ul>
       </main>
     </>
   );
-            }
+}
