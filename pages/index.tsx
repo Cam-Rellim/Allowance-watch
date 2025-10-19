@@ -81,7 +81,10 @@ export default function Home() {
           });
         }
       }
-      setFindings(out.sort((a, b) => a.chainName.localeCompare(b.chainName) || a.tokenSymbol.localeCompare(b.tokenSymbol)));
+      // Sort for stable, readable output
+      setFindings(out.sort((a, b) =>
+        a.chainName.localeCompare(b.chainName) || a.tokenSymbol.localeCompare(b.tokenSymbol)
+      ));
     } catch (e: any) {
       alert('Scan failed: ' + (e?.message || String(e)));
     } finally {
@@ -122,7 +125,7 @@ export default function Home() {
             {CHAINS.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
 
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 14 }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 14 }}>
             <input type="checkbox" checked={scanAll} onChange={e => setScanAll(e.target.checked)} />
             Scan all chains
           </label>
