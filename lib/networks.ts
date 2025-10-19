@@ -1,19 +1,27 @@
-import { createPublicClient, http } from 'viem';
-import { mainnet } from 'viem/chains';
+import { createPublicClient, http } from "viem";
+import { CHAIN_BY_ID } from "../config/chains";
 
-export const chains = {
-  ethereum: mainnet
-} as const;
-
-export type SupportedChainKey = keyof typeof chains;
-
-export function getPublicClient(chain: SupportedChainKey = 'ethereum') {
-  const rpc = process.env.NEXT_PUBLIC_ETHEREUM_RPC_URL;
-  if (!rpc) {
-    console.warn('NEXT_PUBLIC_ETHEREUM_RPC_URL not set. Using default public RPC which may be unreliable.');
+function rpcFor(chainId: number): string {
+  switch (chainId) {
+    case 1:
+      return process.env.NEXT_PUBLIC_RPC_MAINNET
+        ?? process.env.NEXT_PUBLIC_ETHEREUM_RPC_URL
+        ?? "https://cloudflare-eth.com";
+    case 8453:
+      return process.env.NEXT_PUBLIC_RPC_BASE ?? "https://mainnet.base.org";
+    case 42161:
+      return process.env.NEXT_PUBLIC_RPC_ARBITRUM ?? "https://arb1.arbitrum.io/rpc";
+    case 56:
+      return process.env.NEXT_PUBLIC_RPC_BSC ?? "https://bsc-dataseed.binance.org";
+    case 43114:
+      return process.env.NEXT_PUBLIC_RPC_AVALANCHE ?? "https://api.avax.network/ext/bc/C/rpc";
+    default:
+      throw new Error(`Unsupported chain ${chainId}`);
   }
-  return createPublicClient({
-    chain: chains[chain],
-    transport: http(rpc || 'https://eth.llamarpc.com')
-  });
+}
+
+export function getPublicClient(chainId: number) {
+  const chain = CHAIN_BY_ID[chainId];
+  const url = rpcFor(chainId);
+  return createPublicClient({ chain, transport: http(url) });
 }
