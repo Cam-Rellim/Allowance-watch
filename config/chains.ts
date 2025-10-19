@@ -1,8 +1,9 @@
 import { mainnet, base, arbitrum, bsc, avalanche } from 'viem/chains';
+import type { Chain } from 'viem';
 
-export const CHAINS = [base, arbitrum, bsc, avalanche, mainnet]; // prioritize L2s/alt L1s
+export const CHAINS: Chain[] = [base, arbitrum, bsc, avalanche, mainnet];
 
-export const CHAIN_BY_ID: Record<number, typeof mainnet> = {
+export const CHAIN_BY_ID: Record<number, Chain> = {
   [mainnet.id]: mainnet,
   [base.id]: base,
   [arbitrum.id]: arbitrum,
