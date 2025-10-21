@@ -13,6 +13,9 @@ import { CHAINS, DEFAULT_CHAIN_ID } from '../config/chains';
 import { TOKENS_BY_CHAIN } from '../config/tokens';
 import { SPENDERS_BY_CHAIN } from '../config/spenders';
 
+import ConnectButton from '../components/ConnectButton';
+import RevokeButton from '../components/RevokeButton';
+
 type Finding = {
   chainId: number;
   chainName: string;
@@ -39,6 +42,33 @@ const MAX_RECENTS = 6;
 const short = (addr: string) => addr.slice(0, 6) + '…' + addr.slice(-4);
 
 export default function Home() {
+  // --- Theme ---
+  const [mode, setMode] = useState<Mode>('system');
+  function applyTheme(m: Mode) {
+    const root = document.documentElement;
+    if (m === 'dark') root.setAttribute('data-theme', 'dark');
+    else if (m === 'light') root.setAttribute('data-theme', 'light');
+    else root.removeAttribute('data-theme'); // system
+  }
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const saved = (localStorage.getItem(THEME_KEY) as Mode) || 'system';
+    setMode(saved);
+    applyTheme(saved);
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    const onChange = () => {
+      if ((localStorage.getItem(THEME_KEY) as Mode) === 'system') applyTheme('system');
+    };
+    mq.addEventListener?.('change', onChange);
+    return () => mq.removeEventListener?.('change', onChange);
+  }, []);
+  function onThemeChange(next: Mode) {
+    setMode(next);
+    if (typeof window !== 'undefined') localStorage.setItem(THEME_KEY, next);
+    applyTheme(next);
+  }
+
+  // --- App state ---
   const [owner, setOwner] = useState<string>('');
   const [ensResolvedNote, setEnsResolvedNote] = useState<string>('');
   const [chainId, setChainId] = useState<number>(DEFAULT_CHAIN_ID);
@@ -51,47 +81,36 @@ export default function Home() {
   const [saveOpen, setSaveOpen] = useState(false);
   const [saveName, setSaveName] = useState('');
   const [recents, setRecents] = useState<Address[]>([]);
-  const [mode, setMode] = useState<Mode>('system');
 
+  // checksum of the scanned address (used by RevokeButton to validate)
+  const scannedChecksum = isAddress(owner as Address) ? getAddress(owner as `0x${string}`) : undefined;
+
+  // chain helpers
   const chainById = useMemo(
     () => Object.fromEntries(CHAINS.map((c) => [c.id, c])),
     []
   ) as Record<number, (typeof CHAINS)[number]>;
   const explorerBaseUrl = (cid: number) => chainById[cid]?.blockExplorers?.default?.url;
 
-  // ----- Theme handling -----
-  function applyTheme(m: Mode) {
-    const root = document.documentElement;
-    if (m === 'dark') root.setAttribute('data-theme', 'dark');
-    else if (m === 'light') root.setAttribute('data-theme', 'light');
-    else root.removeAttribute('data-theme'); // system
-  }
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const saved = (localStorage.getItem(THEME_KEY) as Mode) || 'system';
-    setMode(saved);
-    applyTheme(saved);
-    // If user chooses "system", reflect OS changes automatically (CSS media query handles tokens)
-    const mq = window.matchMedia('(prefers-color-scheme: dark)');
-    const onChange = () => { if ((localStorage.getItem(THEME_KEY) as Mode) === 'system') applyTheme('system'); };
-    mq.addEventListener?.('change', onChange);
-    return () => mq.removeEventListener?.('change', onChange);
-  }, []);
-  function onThemeChange(next: Mode) {
-    setMode(next);
-    if (typeof window !== 'undefined') localStorage.setItem(THEME_KEY, next);
-    applyTheme(next);
-  }
-
-  // ----- Address book & recents -----
+  // --- Address book & recents ---
   useEffect(() => {
     if (typeof window === 'undefined') return;
     try { const raw = localStorage.getItem(BOOK_KEY); if (raw) setBook(JSON.parse(raw)); } catch {}
     try { const raw = localStorage.getItem(RECENTS_KEY); if (raw) setRecents(JSON.parse(raw)); } catch {}
   }, []);
-  function persistBook(next: BookEntry[]) { setBook(next); if (typeof window !== 'undefined') localStorage.setItem(BOOK_KEY, JSON.stringify(next)); }
-  function persistRecents(next: Address[]) { setRecents(next); if (typeof window !== 'undefined') localStorage.setItem(RECENTS_KEY, JSON.stringify(next)); }
-  function addRecent(addr: Address) { const cs = getAddress(addr); const next = [cs, ...recents.filter((a) => getAddress(a) !== cs)].slice(0, MAX_RECENTS); persistRecents(next); }
+  function persistBook(next: BookEntry[]) {
+    setBook(next);
+    if (typeof window !== 'undefined') localStorage.setItem(BOOK_KEY, JSON.stringify(next));
+  }
+  function persistRecents(next: Address[]) {
+    setRecents(next);
+    if (typeof window !== 'undefined') localStorage.setItem(RECENTS_KEY, JSON.stringify(next));
+  }
+  function addRecent(addr: Address) {
+    const cs = getAddress(addr);
+    const next = [cs, ...recents.filter((a) => getAddress(a) !== cs)].slice(0, MAX_RECENTS);
+    persistRecents(next);
+  }
   function saveToBook(name: string, addr: Address) {
     const cs = getAddress(addr);
     const existing = book.find((b) => b.id === cs);
@@ -101,7 +120,7 @@ export default function Home() {
   }
   const deleteFromBook = (id: string) => persistBook(book.filter((b) => b.id !== id));
 
-  // ----- ENS (mainnet) -----
+  // --- ENS (mainnet) ---
   async function resolveEnsMaybe(input: string): Promise<Address | null> {
     if (!/\.eth$/i.test(input)) return null;
     try {
@@ -109,10 +128,12 @@ export default function Home() {
       // @ts-ignore tolerate viem version differences
       const addr: Address | null = await mainnet.getEnsAddress({ name: input });
       return addr ? getAddress(addr) : null;
-    } catch { return null; }
+    } catch {
+      return null;
+    }
   }
 
-  // ----- Scan -----
+  // --- Scan ---
   async function scan() {
     setError(''); setEnsResolvedNote('');
     let input = owner.trim();
@@ -166,6 +187,7 @@ export default function Home() {
           await sleep(60);
         }
       }
+
       out.sort(
         (a, b) =>
           a.chainName.localeCompare(b.chainName) ||
@@ -176,19 +198,30 @@ export default function Home() {
     } catch (e: any) {
       const msg = String(e?.message || e);
       setError(msg.includes('429') ? 'Public RPC rate limit (429). Try again shortly or set a custom RPC in settings.' : msg);
-    } finally { setStatus('done'); }
+    } finally {
+      setStatus('done');
+    }
   }
 
-  const buttonLabel = status === 'scanning' ? 'Scanning…' : status === 'done' ? 'Scan again' : 'Scan';
-  const isHigh = (x: bigint, decimals: number) => { try { const v = Number(formatUnits(x, decimals)); return Number.isFinite(v) && v >= 10_000; } catch { return false; } };
+  const buttonLabel =
+    status === 'scanning' ? 'Scanning…' : status === 'done' ? 'Scan again' : 'Scan';
+  const isHigh = (x: bigint, decimals: number) => {
+    try { const v = Number(formatUnits(x, decimals)); return Number.isFinite(v) && v >= 10_000; }
+    catch { return false; }
+  };
 
   async function exportBook() {
     const payload = JSON.stringify(book, null, 2);
-    if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) { await navigator.clipboard.writeText(payload); alert('Address book copied to clipboard.'); }
-    else { alert(payload); }
+    if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(payload);
+      alert('Address book copied to clipboard.');
+    } else {
+      alert(payload);
+    }
   }
   async function importBook() {
-    const payload = prompt('Paste the JSON you exported earlier:'); if (!payload) return;
+    const payload = prompt('Paste the JSON you exported earlier:');
+    if (!payload) return;
     try {
       const data = JSON.parse(payload) as BookEntry[];
       const sanitized = Array.isArray(data)
@@ -197,8 +230,11 @@ export default function Home() {
             return { id: a, address: a, name: String(d.name||'').slice(0,64)||short(a), updatedAt: Number(d.updatedAt||Date.now()) } as BookEntry;
           })
         : [];
-      persistBook(sanitized); alert(`Imported ${sanitized.length} entries.`);
-    } catch (e: any) { alert('Import failed: ' + (e?.message || String(e))); }
+      persistBook(sanitized);
+      alert(`Imported ${sanitized.length} entries.`);
+    } catch (e: any) {
+      alert('Import failed: ' + (e?.message || String(e)));
+    }
   }
 
   return (
@@ -207,17 +243,20 @@ export default function Home() {
 
       <div className="header">
         <h1>Allowance Watch</h1>
-        <div className="themeSel">
-          <span>Theme</span>
-          <select className="select" value={mode} onChange={(e)=>onThemeChange(e.target.value as Mode)}>
-            <option value="system">System</option>
-            <option value="light">Light</option>
-            <option value="dark">Dark</option>
-          </select>
+        <div className="rowFlex" style={{ gap: 8 }}>
+          <div className="themeSel">
+            <span>Theme</span>
+            <select className="select" value={mode} onChange={(e)=>onThemeChange(e.target.value as Mode)}>
+              <option value="system">System</option>
+              <option value="light">Light</option>
+              <option value="dark">Dark</option>
+            </select>
+          </div>
+          <ConnectButton />
         </div>
       </div>
 
-      <p className="sub">Scan ERC-20 allowances across Base, Arbitrum, BNB, Avalanche, and Ethereum.</p>
+      <p className="sub">Scan ERC-20 allowances across Base, Arbitrum, BNB, Avalanche, and Ethereum. Revoke directly from results.</p>
 
       <label htmlFor="owner" className="label">Wallet address</label>
       <div className="rowFlex">
@@ -246,7 +285,12 @@ export default function Home() {
       {saveOpen && (
         <div className="panel">
           <div className="panelRow">
-            <input placeholder="Name (e.g., Cold Wallet)" value={saveName} onChange={(e) => setSaveName(e.target.value)} className="input" />
+            <input
+              placeholder="Name (e.g., Cold Wallet)"
+              value={saveName}
+              onChange={(e) => setSaveName(e.target.value)}
+              className="input"
+            />
           </div>
           <div className="panelRow">
             <button
@@ -256,7 +300,9 @@ export default function Home() {
                   const addr = isAddress(owner as Address) ? getAddress(owner as `0x${string}`) : norm(owner);
                   saveToBook(saveName, addr);
                   setSaveName(''); setSaveOpen(false);
-                } catch { alert('Enter a valid address first.'); }
+                } catch {
+                  alert('Enter a valid address first.');
+                }
               }}
             >Save Address</button>
           </div>
@@ -342,7 +388,7 @@ export default function Home() {
         <>
           <table className="table">
             <thead>
-              <tr><th>Chain</th><th>Token</th><th>Spender</th><th>Allowance</th></tr>
+              <tr><th>Chain</th><th>Token</th><th>Spender</th><th>Allowance</th><th>Action</th></tr>
             </thead>
             <tbody>
               {findings.map((f, i) => {
@@ -359,6 +405,7 @@ export default function Home() {
                       {(f.allowanceRaw >= maxUint256 / 2n) && <span className="tag warn">Unlimited</span>}
                       {(f.allowanceRaw < maxUint256 / 2n) && isHigh(f.allowanceRaw, f.decimals) && <span className="tag">High</span>}
                     </td>
+                    <td><RevokeButton finding={f} scannedChecksum={scannedChecksum} /></td>
                   </tr>
                 );
               })}
@@ -388,6 +435,7 @@ export default function Home() {
                     <div className="labelSmall">Spender</div>
                     <div className="valueSmall">{spenderLink ? <a href={spenderLink} target="_blank" rel="noreferrer">{f.spenderLabel}</a> : f.spenderLabel}</div>
                   </div>
+                  <RevokeButton finding={f} scannedChecksum={scannedChecksum} />
                 </div>
               );
             })}
