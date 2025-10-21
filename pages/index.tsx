@@ -20,8 +20,8 @@ type Finding = {
   tokenAddress: Address;
   spenderLabel: string;
   spenderAddress: Address;
-  allowance: string;     // pretty string we show
-  allowanceRaw: bigint;  // raw bigint (for tags/sorting)
+  allowance: string;     // human-friendly
+  allowanceRaw: bigint;  // raw bigint
   decimals: number;
 };
 
@@ -44,14 +44,12 @@ const BOOK_KEY = 'aw:book';
 const RECENTS_KEY = 'aw:recents';
 const MAX_RECENTS = 6;
 
-function short(addr: string) {
-  return addr.slice(0, 6) + '…' + addr.slice(-4);
-}
+const short = (addr: string) => addr.slice(0, 6) + '…' + addr.slice(-4);
 
 export default function Home() {
   // --- app state ---
   const [owner, setOwner] = useState<string>('');
-  const [ensResolvedNote, setEnsResolvedNote] = useState<string>(''); // e.g., "vitalik.eth → 0x1234..."
+  const [ensResolvedNote, setEnsResolvedNote] = useState<string>(''); // "vitalik.eth → 0x123...”
   const [chainId, setChainId] = useState<number>(DEFAULT_CHAIN_ID);
   const [scanAll, setScanAll] = useState<boolean>(true);
   const [status, setStatus] = useState<Status>('idle');
@@ -71,10 +69,7 @@ export default function Home() {
     []
   ) as Record<number, (typeof CHAINS)[number]>;
 
-  function explorerBaseUrl(cid: number): string | undefined {
-    const c = chainById[cid];
-    return c?.blockExplorers?.default?.url;
-  }
+  const explorerBaseUrl = (cid: number) => chainById[cid]?.blockExplorers?.default?.url;
 
   // ---------- localStorage I/O ----------
   useEffect(() => {
@@ -91,15 +86,11 @@ export default function Home() {
 
   function persistBook(next: BookEntry[]) {
     setBook(next);
-    if (typeof window !== 'undefined') {
-      localStorage.setItem(BOOK_KEY, JSON.stringify(next));
-    }
+    if (typeof window !== 'undefined') localStorage.setItem(BOOK_KEY, JSON.stringify(next));
   }
   function persistRecents(next: Address[]) {
     setRecents(next);
-    if (typeof window !== 'undefined') {
-      localStorage.setItem(RECENTS_KEY, JSON.stringify(next));
-    }
+    if (typeof window !== 'undefined') localStorage.setItem(RECENTS_KEY, JSON.stringify(next));
   }
 
   function addRecent(addr: Address) {
@@ -112,24 +103,18 @@ export default function Home() {
     const cs = getAddress(addr);
     const existing = book.find((b) => b.id === cs);
     const entry: BookEntry = { id: cs, address: cs, name: name.trim() || short(cs), updatedAt: Date.now() };
-    const next = existing
-      ? book.map((b) => (b.id === cs ? entry : b))
-      : [entry, ...book].slice(0, 100);
+    const next = existing ? book.map((b) => (b.id === cs ? entry : b)) : [entry, ...book].slice(0, 100);
     persistBook(next);
   }
 
-  function deleteFromBook(id: string) {
-    persistBook(book.filter((b) => b.id !== id));
-  }
+  const deleteFromBook = (id: string) => persistBook(book.filter((b) => b.id !== id));
 
-  // ---------- ENS resolution (mainnet) ----------
+  // ---------- ENS resolution (mainnet only) ----------
   async function resolveEnsMaybe(input: string): Promise<Address | null> {
-    // quick heuristic: attempt resolving *.eth
     if (!/\.eth$/i.test(input)) return null;
     try {
       const mainnet = getPublicClient(1);
-      // viem public client has .getEnsAddress (v2)
-      // @ts-ignore - tolerate versions that type this as any
+      // @ts-ignore tolerate different viem versions
       const addr: Address | null = await mainnet.getEnsAddress({ name: input });
       return addr ? getAddress(addr) : null;
     } catch {
@@ -144,7 +129,7 @@ export default function Home() {
 
     let input = owner.trim();
 
-    // resolve ENS if needed (before isAddress gate)
+    // resolve ENS if entered
     if (!isAddress(input as Address) && /\.eth$/i.test(input)) {
       const resolved = await resolveEnsMaybe(input);
       if (!resolved) {
@@ -177,7 +162,7 @@ export default function Home() {
         const spenders = SPENDERS_BY_CHAIN[cid] ?? [];
 
         for (const token of tokens) {
-          // Batch decimals + all spender allowances using on-chain multicall
+          // multicall decimals + all spender allowances
           const calls = [
             { address: norm(token.address), abi: ERC20_ABI, functionName: 'decimals' as const },
             ...spenders.map((sp) => ({
@@ -230,16 +215,13 @@ export default function Home() {
       );
 
       setFindings(out);
-
-      // remember recent
       addRecent(ownerAddr);
     } catch (e: any) {
       const msg = String(e?.message || e);
-      if (msg.includes('429')) {
-        setError('Public RPC rate limit (429). Try again shortly or set a custom RPC in settings.');
-      } else {
-        setError(msg);
-      }
+      setError(msg.includes('429')
+        ? 'Public RPC rate limit (429). Try again shortly or set a custom RPC in settings.'
+        : msg
+      );
     } finally {
       setStatus('done');
     }
@@ -248,7 +230,6 @@ export default function Home() {
   const buttonLabel =
     status === 'scanning' ? 'Scanning…' : status === 'done' ? 'Scan again' : 'Scan';
 
-  // tags
   const isHigh = (x: bigint, decimals: number) => {
     try {
       const v = Number(formatUnits(x, decimals));
@@ -258,7 +239,7 @@ export default function Home() {
     }
   };
 
-  // export / import
+  // export / import address book
   async function exportBook() {
     const payload = JSON.stringify(book, null, 2);
     if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
@@ -295,7 +276,9 @@ export default function Home() {
 
   return (
     <>
-      <Head><title>Allowance Watch</title></Head>
+      <Head>
+        <title>Allowance Watch</title>
+      </Head>
       <main className="wrap">
         <h1>Allowance Watch</h1>
         <p className="sub">
@@ -474,8 +457,8 @@ export default function Home() {
                       </td>
                       <td>
                         {f.allowance}
-                        { (f.allowanceRaw >= maxUint256 / 2n) && <span className="tag warn">Unlimited</span> }
-                        { (f.allowanceRaw < maxUint256 / 2n) && isHigh(f.allowanceRaw, f.decimals) && <span className="tag">High</span> }
+                        {(f.allowanceRaw >= maxUint256 / 2n) && <span className="tag warn">Unlimited</span>}
+                        {(f.allowanceRaw < maxUint256 / 2n) && isHigh(f.allowanceRaw, f.decimals) && <span className="tag">High</span>}
                       </td>
                     </tr>
                   );
@@ -495,8 +478,8 @@ export default function Home() {
                       <span className="badge">{f.chainName}</span>
                       <div className="amt">
                         {f.allowance}
-                        { (f.allowanceRaw >= maxUint256 / 2n) && <span className="tag warn">Unlimited</span> }
-                        { (f.allowanceRaw < maxUint256 / 2n) && isHigh(f.allowanceRaw, f.decimals) && <span className="tag">High</span> }
+                        {(f.allowanceRaw >= maxUint256 / 2n) && <span className="tag warn">Unlimited</span>}
+                        {(f.allowanceRaw < maxUint256 / 2n) && isHigh(f.allowanceRaw, f.decimals) && <span className="tag">High</span>}
                       </div>
                     </div>
                     <div className="row">
@@ -545,4 +528,9 @@ export default function Home() {
           .chip { font-size: 12px; padding: 4px 8px; border-radius: 999px; border: 1px solid #e5e7eb; background: #f9fafb; }
           .chip.danger { background: #fff1f2; border-color: #fecdd3; color: #be123c; }
 
-    
+          .recents { margin-top: 10px; }
+          .labelSmall { color: #6b7280; margin-bottom: 4px; }
+          .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+
+          .controls { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
+          .select { padding: 10px; border-radius: 8px; border: 1px solid #e5e7eb; }
