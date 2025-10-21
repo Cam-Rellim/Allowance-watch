@@ -275,7 +275,7 @@ export default function Home() {
   }
 
   return (
-    <>
+    <div>
       <Head>
         <title>Allowance Watch</title>
       </Head>
@@ -533,4 +533,4 @@ export default function Home() {
           .chips { display: flex; gap: 6px; flex-wrap: wrap; }
 
           .controls { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
-          .select { padding: 10px; border-radius: 8px; border: 1px solid #e5e7eb; }
+          .select { padding: 10px; border-radius: 8px; border: 1px solid #e5e7eb
