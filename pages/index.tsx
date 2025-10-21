@@ -26,6 +26,7 @@ type Finding = {
 };
 type Status = 'idle' | 'scanning' | 'done';
 type BookEntry = { id: string; name: string; address: Address; updatedAt: number; };
+type Mode = 'system' | 'light' | 'dark';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const norm = (a: string): Address => getAddress(a as `0x${string}`);
@@ -33,6 +34,7 @@ const nfCompact = new Intl.NumberFormat('en-US', { notation: 'compact', maximumF
 const prettyAmount = (x: number) => (Number.isFinite(x) ? nfCompact.format(x) : '∞');
 const BOOK_KEY = 'aw:book';
 const RECENTS_KEY = 'aw:recents';
+const THEME_KEY = 'aw:theme';
 const MAX_RECENTS = 6;
 const short = (addr: string) => addr.slice(0, 6) + '…' + addr.slice(-4);
 
@@ -49,6 +51,7 @@ export default function Home() {
   const [saveOpen, setSaveOpen] = useState(false);
   const [saveName, setSaveName] = useState('');
   const [recents, setRecents] = useState<Address[]>([]);
+  const [mode, setMode] = useState<Mode>('system');
 
   const chainById = useMemo(
     () => Object.fromEntries(CHAINS.map((c) => [c.id, c])),
@@ -56,6 +59,31 @@ export default function Home() {
   ) as Record<number, (typeof CHAINS)[number]>;
   const explorerBaseUrl = (cid: number) => chainById[cid]?.blockExplorers?.default?.url;
 
+  // ----- Theme handling -----
+  function applyTheme(m: Mode) {
+    const root = document.documentElement;
+    if (m === 'dark') root.setAttribute('data-theme', 'dark');
+    else if (m === 'light') root.setAttribute('data-theme', 'light');
+    else root.removeAttribute('data-theme'); // system
+  }
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const saved = (localStorage.getItem(THEME_KEY) as Mode) || 'system';
+    setMode(saved);
+    applyTheme(saved);
+    // If user chooses "system", reflect OS changes automatically (CSS media query handles tokens)
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    const onChange = () => { if ((localStorage.getItem(THEME_KEY) as Mode) === 'system') applyTheme('system'); };
+    mq.addEventListener?.('change', onChange);
+    return () => mq.removeEventListener?.('change', onChange);
+  }, []);
+  function onThemeChange(next: Mode) {
+    setMode(next);
+    if (typeof window !== 'undefined') localStorage.setItem(THEME_KEY, next);
+    applyTheme(next);
+  }
+
+  // ----- Address book & recents -----
   useEffect(() => {
     if (typeof window === 'undefined') return;
     try { const raw = localStorage.getItem(BOOK_KEY); if (raw) setBook(JSON.parse(raw)); } catch {}
@@ -73,6 +101,7 @@ export default function Home() {
   }
   const deleteFromBook = (id: string) => persistBook(book.filter((b) => b.id !== id));
 
+  // ----- ENS (mainnet) -----
   async function resolveEnsMaybe(input: string): Promise<Address | null> {
     if (!/\.eth$/i.test(input)) return null;
     try {
@@ -83,6 +112,7 @@ export default function Home() {
     } catch { return null; }
   }
 
+  // ----- Scan -----
   async function scan() {
     setError(''); setEnsResolvedNote('');
     let input = owner.trim();
@@ -175,7 +205,18 @@ export default function Home() {
     <main className="wrap">
       <Head><title>Allowance Watch</title></Head>
 
-      <h1>Allowance Watch</h1>
+      <div className="header">
+        <h1>Allowance Watch</h1>
+        <div className="themeSel">
+          <span>Theme</span>
+          <select className="select" value={mode} onChange={(e)=>onThemeChange(e.target.value as Mode)}>
+            <option value="system">System</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </div>
+      </div>
+
       <p className="sub">Scan ERC-20 allowances across Base, Arbitrum, BNB, Avalanche, and Ethereum.</p>
 
       <label htmlFor="owner" className="label">Wallet address</label>
