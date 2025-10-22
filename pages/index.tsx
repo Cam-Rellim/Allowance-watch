@@ -1,334 +1,216 @@
 import Head from 'next/head';
-import { useEffect, useMemo, useState } from 'react';
-import { useAccount } from 'wagmi';
-import { getPublicClient } from '../lib/networks';
+import React, { useMemo, useState } from 'react';
+import { isAddress, getAddress, type Address } from 'viem';
 import { ERC20_ABI } from '../lib/erc20';
+import { getPublicClient } from '../lib/networks';
 import { CHAINS, DEFAULT_CHAIN_ID } from '../config/chains';
 import { TOKENS_BY_CHAIN } from '../config/tokens';
 import { SPENDERS_BY_CHAIN } from '../config/spenders';
+
 import ConnectButton from '../components/ConnectButton';
 import Brand from '../components/Brand';
+import SaveAddressButton from '../components/SaveAddressButton';
+import AddressBook from '../components/AddressBook';
 import SummaryBar from '../components/SummaryBar';
 import Results from '../components/Results';
-import { normalizeAddressStrict } from '../lib/addr';
 
-// -------------------- Types --------------------
+import '../styles/home.css';
 
-type TokenCfg = { symbol: string; address: string };
-type SpenderCfg = { name?: string; address: string };
+type ChainCfg = (typeof CHAINS)[keyof typeof CHAINS];
+type Token = { address: Address; symbol: string; decimals: number };
+type Spender = { address: Address; name: string };
 
 type Finding = {
   chainId: number;
   chainName: string;
-  token: { symbol: string; address: `0x${string}` };
-  spender: { name: string; address: `0x${string}` };
-  allowanceRaw: bigint;
+  token: Token;
+  spender: Spender;
   allowancePretty: string;
+  allowanceRaw: bigint;
+  risk: 'high' | 'med' | 'low';
 };
 
-type Issue = {
-  kind: 'token' | 'spender' | 'call' | 'owner';
-  chainId?: number;
-  symbol?: string;
-  address?: string;
-  reason: string;
-};
-
-// -------------------- Helpers --------------------
-
-function prettyAmountFloat(x: number): string {
-  if (!isFinite(x)) return '∞';
-  if (x === 0) return '0';
-  const abs = Math.abs(x);
-  if (abs >= 1_000_000_000) return (x / 1_000_000_000).toFixed(2) + 'B';
-  if (abs >= 1_000_000) return (x / 1_000_000).toFixed(2) + 'M';
-  if (abs >= 1_000) return (x / 1_000).toFixed(2) + 'k';
-  if (abs < 0.000001) return x.toExponential(2);
-  return x.toFixed(abs < 1 ? 6 : 4).replace(/\.?0+$/, '');
+function prettyAmount(raw: bigint, decimals: number) {
+  if (raw === 0n) return '0';
+  const neg = raw < 0n ? '-' : '';
+  const val = raw < 0n ? -raw : raw;
+  const s = val.toString().padStart(decimals + 1, '0');
+  const head = s.slice(0, -decimals);
+  const tail = s.slice(-decimals).replace(/0+$/, '');
+  return neg + (tail ? `${head}.${tail}` : head);
 }
-
-function bigintToFloat(n: bigint, decimals: number): number {
-  // Avoid precision issues for huge numbers by splitting
-  const d = BigInt(decimals);
-  const base = 10n ** d;
-  const whole = Number(n / base);
-  const frac = Number(n % base) / Number(base);
-  return whole + frac;
-}
-
-// -------------------- Component --------------------
 
 export default function Home() {
-  const { address: connectedAddress } = useAccount();
+  // form state
+  const [input, setInput] = useState('');
+  const [scanAll, setScanAll] = useState(true);
+  const [selectedChainId, setSelectedChainId] = useState<number>(DEFAULT_CHAIN_ID);
 
-  const chainList = useMemo(
-    () => Object.values(CHAINS).map((c) => ({ id: c.id, name: c.name })),
+  // results
+  const [findings, setFindings] = useState<Finding[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const chainsList: ChainCfg[] = useMemo(
+    () => Object.values(CHAINS).sort((a, b) => a.name.localeCompare(b.name)),
     []
   );
 
-  const [addressInput, setAddressInput] = useState<string>('');
-  const [selectedChain, setSelectedChain] = useState<number>(DEFAULT_CHAIN_ID);
-  const [scanAll, setScanAll] = useState<boolean>(true);
-
-  const [loading, setLoading] = useState(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-
-  const [findings, setFindings] = useState<Finding[]>([]);
-  const [issues, setIssues] = useState<Issue[]>([]);
-
-  // Prefill recent address (optional UX nicety)
-  useEffect(() => {
-    const recent = localStorage.getItem('aw_recent');
-    if (recent && !addressInput) setAddressInput(recent);
-  }, []); // eslint-disable-line
-
-  function rememberRecent(addr: string) {
-    try {
-      localStorage.setItem('aw_recent', addr);
-    } catch {}
+  async function normalizeToAddress(text: string): Promise<Address> {
+    const t = text.trim();
+    if (isAddress(t)) return getAddress(t);
+    if (t.endsWith('.eth')) {
+      // resolve ENS on mainnet
+      const client = getPublicClient(1);
+      const addr = await client.getEnsAddress({ name: t as any }).catch(() => null);
+      if (addr && isAddress(addr)) return getAddress(addr);
+    }
+    throw new Error('Please enter a valid EVM address.');
   }
 
-  async function scan() {
-    setLoading(true);
-    setErrorMsg(null);
+  function riskFrom(raw: bigint, decimals: number): 'high' | 'med' | 'low' {
+    // simple heuristic
+    const pretty = Number(prettyAmount(raw, decimals).split('.')[0] || '0');
+    if (pretty >= 1_000_000) return 'high';
+    if (pretty >= 10_000) return 'med';
+    return 'low';
+  }
+
+  async function handleScan() {
+    setErr(null);
     setFindings([]);
-    setIssues([]);
-
-    const collectedIssues: Issue[] = [];
-    let owner: `0x${string}` | null = null;
-
-    // 1) Normalize owner (input wins; else connected)
+    const owner: Address = await normalizeToAddress(input).catch((e) => {
+      setErr(e.message || String(e));
+      throw e;
+    });
+    setLoading(true);
     try {
-      if (addressInput && addressInput.trim()) {
-        owner = normalizeAddressStrict(addressInput);
-      } else if (connectedAddress) {
-        owner = normalizeAddressStrict(connectedAddress);
-        setAddressInput(owner);
-      } else {
-        collectedIssues.push({ kind: 'owner', reason: 'Please enter or connect a wallet address.' });
-      }
-    } catch (e: any) {
-      collectedIssues.push({ kind: 'owner', reason: `Address error: ${String(e?.message || e)}` });
-    }
+      const chainIds = scanAll ? Object.values(CHAINS).map((c) => c.id) : [selectedChainId];
+      const all: Finding[] = [];
 
-    if (!owner) {
-      setIssues(collectedIssues);
-      setLoading(false);
-      setErrorMsg('Please enter a valid EVM address.');
-      return;
-    }
+      for (const chainId of chainIds) {
+        const cfg = Object.values(CHAINS).find((c) => c.id === chainId)!;
+        const tokens = (TOKENS_BY_CHAIN as any)[chainId] as Token[] | undefined;
+        const spenders = (SPENDERS_BY_CHAIN as any)[chainId] as Spender[] | undefined;
+        if (!tokens?.length || !spenders?.length) continue;
 
-    rememberRecent(owner);
-
-    // 2) Decide which chains to scan
-    const scanChainIds = scanAll ? chainList.map((c) => c.id) : [selectedChain];
-
-    const allFindings: Finding[] = [];
-
-    // 3) For each chain → tokens × spenders
-    for (const chainId of scanChainIds) {
-      const chainMeta = CHAINS[chainId];
-      if (!chainMeta) continue;
-
-      const client = getPublicClient(chainId);
-      const tokens: TokenCfg[] = (TOKENS_BY_CHAIN as any)[chainId] || [];
-      const spenders: SpenderCfg[] = (SPENDERS_BY_CHAIN as any)[chainId] || [];
-
-      for (const token of tokens) {
-        let tokenAddr: `0x${string}` | null = null;
-        try {
-          tokenAddr = normalizeAddressStrict(token.address);
-        } catch (e: any) {
-          collectedIssues.push({
-            kind: 'token',
-            chainId,
-            symbol: token.symbol,
-            address: token.address,
-            reason: String(e?.message || e),
-          });
-          continue;
-        }
-
-        // Try decimals, default to 18 if call fails (but record the issue)
-        let decimals = 18;
-        try {
-          const dec = await client.readContract({
-            address: tokenAddr,
-            abi: ERC20_ABI,
-            functionName: 'decimals',
-          });
-          if (typeof dec === 'number') decimals = dec;
-        } catch (e: any) {
-          collectedIssues.push({
-            kind: 'call',
-            chainId,
-            symbol: token.symbol,
-            address: tokenAddr,
-            reason: 'decimals() failed: ' + (e?.message || e),
-          });
-        }
-
-        for (const spender of spenders) {
-          let spenderAddr: `0x${string}` | null = null;
-          try {
-            spenderAddr = normalizeAddressStrict(spender.address);
-          } catch (e: any) {
-            collectedIssues.push({
-              kind: 'spender',
-              chainId,
-              address: spender.address,
-              reason: String(e?.message || e),
-            });
-            continue;
-          }
-
-          try {
-            const allowance = (await client.readContract({
-              address: tokenAddr,
+        const client = getPublicClient(chainId);
+        const contracts = [];
+        for (const t of tokens) {
+          for (const s of spenders) {
+            contracts.push({
               abi: ERC20_ABI,
-              functionName: 'allowance',
-              args: [owner, spenderAddr],
-            })) as bigint;
-
-            if (allowance > 0n) {
-              const asFloat = bigintToFloat(allowance, decimals);
-              allFindings.push({
-                chainId,
-                chainName: chainMeta.name,
-                token: { symbol: token.symbol, address: tokenAddr },
-                spender: { name: spender.name || 'Spender', address: spenderAddr },
-                allowanceRaw: allowance,
-                allowancePretty: prettyAmountFloat(asFloat) + ' ' + token.symbol,
-              });
-            }
-          } catch (e: any) {
-            collectedIssues.push({
-              kind: 'call',
-              chainId,
-              symbol: token.symbol,
-              address: tokenAddr,
-              reason: 'allowance() failed: ' + (e?.message || e),
+              address: t.address,
+              functionName: 'allowance' as const,
+              args: [owner, s.address],
             });
           }
         }
+
+        const res = await client.multicall({ contracts, allowFailure: true });
+        let i = 0;
+        for (const t of tokens) {
+          for (const s of spenders) {
+            const r = res[i++];
+            if (r.status === 'success') {
+              const raw = r.result as unknown as bigint;
+              if (raw > 0n) {
+                all.push({
+                  chainId,
+                  chainName: cfg.name,
+                  token: t,
+                  spender: s,
+                  allowanceRaw: raw,
+                  allowancePretty: `${prettyAmount(raw, t.decimals)} ${t.symbol}`,
+                  risk: riskFrom(raw, t.decimals),
+                });
+              }
+            }
+          }
+        }
       }
+
+      setFindings(all);
+    } catch (e: any) {
+      if (!err) setErr(e?.message || String(e));
+    } finally {
+      setLoading(false);
     }
-
-    // 4) Sort and show
-    allFindings.sort((a, b) => a.chainId - b.chainId || a.token.symbol.localeCompare(b.token.symbol));
-    setFindings(allFindings);
-    setIssues(collectedIssues);
-    setLoading(false);
   }
-
-  // -------------------- UI --------------------
 
   return (
     <>
-      <Head>
-        <title>Allowance Watch</title>
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
-      </Head>
-
-      <main className="wrap" style={{ paddingTop: 18 }}>
-        {/* Header */}
-        <div className="row" style={{ alignItems: 'center', gap: 12 }}>
-          <div className="col">
-            <Brand subtitle="Allowance Watch" />
-          </div>
-          <div>
-            <ConnectButton />
-          </div>
+      <Head><title>CoinIntel Pro — Allowance Watch</title></Head>
+      <main className="wrap">
+        {/* header */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <Brand subtitle="Allowance Watch" />
+          <ConnectButton />
         </div>
 
-        <p style={{ marginTop: 8, opacity: 0.9 }}>
-          Scan ERC-20 allowances across Base, Arbitrum, BNB, Avalanche, Polygon, Optimism, and Ethereum.
-          Revoke directly from results.
+        <p style={{ marginTop: 12, opacity: 0.9 }}>
+          Scan ERC-20 allowances across Base, Arbitrum, BNB, Avalanche, Polygon, Optimism, and
+          Ethereum. Revoke directly from results.
         </p>
 
-        {/* Address + Controls */}
-        <div className="card" style={{ marginTop: 14 }}>
-          <div className="row" style={{ gap: 12, alignItems: 'center' }}>
-            <div className="col">
-              <label className="label">Wallet address</label>
+        {/* form */}
+        <section className="panel" style={{ marginTop: 14 }}>
+          <div className="row" style={{ alignItems: 'end' }}>
+            <div>
+              <div className="label">Wallet address</div>
               <input
                 className="input"
-                inputMode="text"
-                placeholder="0x…"
-                value={addressInput}
-                onChange={(e) => setAddressInput(e.target.value)}
+                placeholder="0x… or ENS (name.eth)"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                spellCheck={false}
               />
             </div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <SaveAddressButton address={input.trim()} />
+              <AddressBook onSelect={(addr) => setInput(addr)} />
+            </div>
+          </div>
 
-            <div className="col" style={{ maxWidth: 180 }}>
-              <label className="label">Chain</label>
+          <div className="row" style={{ marginTop: 12, alignItems: 'center' }}>
+            <div>
+              <div className="label">Chain</div>
               <select
-                className="input"
+                className="select"
+                value={selectedChainId}
+                onChange={(e) => setSelectedChainId(Number(e.target.value))}
                 disabled={scanAll}
-                value={selectedChain}
-                onChange={(e) => setSelectedChain(Number(e.target.value))}
               >
-                {chainList.map((c) => (
+                {chainsList.map((c) => (
                   <option key={c.id} value={c.id}>{c.name}</option>
                 ))}
               </select>
             </div>
 
-            <div className="col" style={{ maxWidth: 160 }}>
-              <label className="label">&nbsp;</label>
-              <label className="checkbox">
-                <input
-                  type="checkbox"
-                  checked={scanAll}
-                  onChange={(e) => setScanAll(e.target.checked)}
-                />
-                <span style={{ marginLeft: 8 }}>Scan all chains</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+              <label className="checkboxRow" title="Scan across all configured chains">
+                <input type="checkbox" checked={scanAll} onChange={(e) => setScanAll(e.target.checked)} />
+                <span>Scan all chains</span>
               </label>
-            </div>
-
-            <div>
-              <label className="label">&nbsp;</label>
-              <button className="btn" onClick={scan} disabled={loading}>
+              <button className="btn" onClick={handleScan} disabled={loading}>
                 {loading ? 'Scanning…' : 'Scan'}
               </button>
             </div>
           </div>
-        </div>
 
-        {/* Error */}
-        {errorMsg && (
-          <div className="alert" role="alert" style={{ marginTop: 12 }}>
-            {errorMsg}
-          </div>
-        )}
-
-        {/* Issues panel */}
-        {issues.length > 0 && (
-          <div className="alert warn" role="alert" style={{ marginTop: 12 }}>
-            <strong>Scan issues ({issues.length})</strong>
-            <ul style={{ marginTop: 6, paddingLeft: 18 }}>
-              {issues.map((it, i) => (
-                <li key={i}>
-                  {it.chainId ? `[${it.chainId}] ` : ''}
-                  {it.kind === 'token' ? 'Token' : it.kind === 'spender' ? 'Spender' : it.kind === 'call' ? 'Call' : 'Owner'}:
-                  {it.symbol ? ` ${it.symbol}` : ''}{' '}
-                  {it.address ? <code>{it.address}</code> : null} — {it.reason}
-                </li>
-              ))}
-            </ul>
-            <div style={{ opacity: 0.8, marginTop: 6 }}>
-              Skipped the above while scanning so you still get results. Fix addresses in
-              <code> config/tokens.ts </code> or <code> config/spenders.ts</code>.
+          {err && (
+            <div style={{ marginTop: 12, padding: 12, borderRadius: 10, border: '1px solid #7a2b2b', background: '#3a2222' }}>
+              {err}
             </div>
-          </div>
-        )}
+          )}
+        </section>
 
-        {/* Summary + Results */}
+        {/* results */}
         <div style={{ marginTop: 14 }}>
           <SummaryBar findings={findings} loading={loading} />
-          <Results findings={findings} />
+          <Results findings={findings as any} />
         </div>
       </main>
     </>
   );
-      }
+                  }
