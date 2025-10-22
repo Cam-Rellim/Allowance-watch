@@ -1,0 +1,38 @@
+<!-- CoinIntel Pro – Shield favicon with CI monogram -->
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <!-- Shield gradients -->
+    <linearGradient id="gBlue" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1e3a8a"/>
+      <stop offset="1" stop-color="#2563eb"/>
+    </linearGradient>
+    <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#0b1220" flood-opacity=".35"/>
+    </filter>
+  </defs>
+
+  <!-- Soft rounded shield -->
+  <path filter="url(#softShadow)"
+        d="M128 20c34 16 60 18 92 12 6-1 10 3 10 8v78c0 63-46 104-102 118-2 .5-4 .5-6 0C66 222 20 181 20 118V40c0-5 4-9 10-8 32 6 58 4 98-12z"
+        fill="url(#gBlue)"/>
+
+  <!-- CI circular mark -->
+  <g transform="translate(128 128)">
+    <!-- Outer white ring -->
+    <circle r="74" fill="none" stroke="#ffffff" stroke-width="16"/>
+
+    <!-- Inner trim ring for depth -->
+    <circle r="60" fill="none" stroke="#e5eefc" stroke-width="6" opacity=".9"/>
+
+    <!-- The "C" : thick dark arc with a wedge gap (like your reference) -->
+    <!-- Using pathLength so dasharray can be in percentages -->
+    <circle r="52" fill="none" stroke="#0b1220" stroke-width="22"
+            pathLength="100" stroke-dasharray="82 18"
+            transform="rotate(-25)"/>
+
+    <!-- Central "I" -->
+    <rect x="-8" y="-40" width="16" height="80" rx="8" fill="#3b82f6"/>
+    <!-- subtle inner glow highlight -->
+    <rect x="-4" y="-36" width="8" height="72" rx="4" fill="#60a5fa" opacity=".65"/>
+  </g>
+</svg>
