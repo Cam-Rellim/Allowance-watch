@@ -1,34 +1,69 @@
-import { mainnet, base, arbitrum, bsc, avalanche } from 'viem/chains';
+export type TokenInfo = {
+  address: `0x${string}`;
+  symbol: string;
+  decimals: number;
+};
 
-export const TOKENS_BY_CHAIN: Record<number, { symbol: string; address: string }[]> = {
-  [mainnet.id]: [
-    { symbol: 'USDC', address: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48' },
-    { symbol: 'USDT', address: '0xdac17f958d2ee523a2206206994597c13d831ec7' },
-    { symbol: 'DAI', address: '0x6b175474e89094c44da98b954eedeac495271d0f' },
-    { symbol: 'WETH', address: '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2' },
-    { symbol: 'WBTC', address: '0x2260fac5e5542a773aa44fbcfedf7c193bc2c599' },
+/**
+ * Minimal but high-signal token sets per chain.
+ * (We can grow these later or make them editable.)
+ */
+export const TOKENS_BY_CHAIN: Record<number, TokenInfo[]> = {
+  // Ethereum mainnet (1)
+  1: [
+    { address: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', symbol: 'USDC', decimals: 6 },
+    { address: '0xdAC17F958D2ee523a2206206994597C13D831ec7', symbol: 'USDT', decimals: 6 },
+    { address: '0x6B175474E89094C44Da98b954EedeAC495271d0F', symbol: 'DAI',  decimals: 18 },
+    { address: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2', symbol: 'WETH', decimals: 18 },
+    { address: '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599', symbol: 'WBTC', decimals: 8 },
   ],
-  [base.id]: [
-    { symbol: 'USDC', address: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913' },
-    { symbol: 'DAI', address: '0x50c5725949a6f0c72e6c4a641f24049a917db0cb' },
-    { symbol: 'WETH', address: '0x4200000000000000000000000000000000000006' },
+
+  // Base (8453)
+  8453: [
+    { address: '0x833589fCD6eDb6E08f4c7C32D4f71B54B68f83F', symbol: 'USDC', decimals: 6 },
+    { address: '0x4200000000000000000000000000000000000006', symbol: 'WETH', decimals: 18 },
   ],
-  [arbitrum.id]: [
-    { symbol: 'USDC', address: '0xaf88d065e77c8cc2239327c5edb3a432268e5831' },
-    { symbol: 'USDT', address: '0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9' },
-    { symbol: 'DAI', address: '0xda10009cbd5d07dd0cecc66161fc93d7c9000da1' },
-    { symbol: 'WETH', address: '0x82af49447d8a07e3bd95bd0d56f35241523fbab1' },
+
+  // Arbitrum (42161)
+  42161: [
+    { address: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831', symbol: 'USDC', decimals: 6 },
+    { address: '0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9', symbol: 'USDT', decimals: 6 },
+    { address: '0xDA10009cBd5D07dd0CeCc66161FC93D7c9000da1', symbol: 'DAI',  decimals: 18 },
+    { address: '0x82aF49447D8a07e3bd95BD0d56f35241523fBab1', symbol: 'WETH', decimals: 18 },
   ],
-  [bsc.id]: [
-    { symbol: 'USDC', address: '0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d' },
-    { symbol: 'USDT', address: '0x55d398326f99059ff775485246999027b3197955' },
-    { symbol: 'DAI', address: '0x1af3f329e8be154074d8769d1ffa4ee058b1dbc3' },
-    { symbol: 'WBNB', address: '0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c' },
+
+  // BNB Smart Chain (56)
+  56: [
+    { address: '0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d', symbol: 'USDC',  decimals: 18 },
+    { address: '0x55d398326f99059ff775485246999027b3197955', symbol: 'USDT',  decimals: 18 },
+    { address: '0x1AF3F329e8BE154074D8769D1FFa4eE058B1DBc3', symbol: 'DAI',   decimals: 18 },
+    { address: '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c', symbol: 'WBNB', decimals: 18 },
   ],
-  [avalanche.id]: [
-    { symbol: 'USDC', address: '0xb97ef9ef8734c71904d8002f8b6bc66dd9c48a6e' },
-    { symbol: 'USDT', address: '0x9702230a8ea53601f5cd2dc00fdbb880a4059836' },
-    { symbol: 'DAI', address: '0xd586e7f844cea2f87f50152665bcbc2c279d8d70' },
-    { symbol: 'WAVAX', address: '0xb31f66aa3c1e785363f0875a1b74e27b85fd66c7' },
+
+  // Avalanche C-Chain (43114)
+  43114: [
+    { address: '0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E', symbol: 'USDC',  decimals: 6 },
+    { address: '0x9702230A8ea53601f5Cd2dc00fDBc13d4dF4A8c7', symbol: 'USDT',  decimals: 6 },
+    { address: '0xd586E7F844cEa2F87f50152665BCbc2C279D8d70', symbol: 'DAI',   decimals: 18 },
+    { address: '0x49D5c2BdFfac6CE2BFdB6640F4F80f226bc10bAB', symbol: 'WETH.e',decimals: 18 },
+    { address: '0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7', symbol: 'WAVAX', decimals: 18 },
+  ],
+
+  // Polygon (137) — NEW
+  137: [
+    { address: '0x3c499c542cef5e3811e1192ce70d8cc03d5c3359', symbol: 'USDC',  decimals: 6 },  // native
+    { address: '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174', symbol: 'USDC.e',decimals: 6 },  // bridged
+    { address: '0xC2132D05D31c914a87C6611C10748AaCb04B58e8', symbol: 'USDT',  decimals: 6 },
+    { address: '0x8f3Cf7ad23Cd3CaDbD9735AFf958023239c6A063', symbol: 'DAI',   decimals: 18 },
+    { address: '0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619', symbol: 'WETH',  decimals: 18 },
+  ],
+
+  // Optimism (10) — NEW
+  10: [
+    { address: '0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85', symbol: 'USDC',  decimals: 6 },  // native
+    { address: '0x7F5c764cBc14f9669B88837ca1490cCa17c31607', symbol: 'USDC.e',decimals: 6 },  // bridged
+    { address: '0x94b008aA00579c1307B0EF2c499aD98a8ce58e58', symbol: 'USDT',  decimals: 6 },
+    { address: '0xDA10009cBd5D07dd0CeCc66161FC93D7c9000da1', symbol: 'DAI',   decimals: 18 },
+    { address: '0x4200000000000000000000000000000000000006', symbol: 'WETH',  decimals: 18 },
   ],
 };
