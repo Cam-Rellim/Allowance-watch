@@ -7,6 +7,8 @@ import {
   getAddress,
   maxUint256,
 } from 'viem';
+import { useAccount, useSwitchChain, useWriteContract } from 'wagmi';
+
 import { getPublicClient } from '../lib/networks';
 import { ERC20_ABI } from '../lib/erc20';
 import { CHAINS, DEFAULT_CHAIN_ID } from '../config/chains';
@@ -14,7 +16,9 @@ import { TOKENS_BY_CHAIN } from '../config/tokens';
 import { SPENDERS_BY_CHAIN } from '../config/spenders';
 
 import ConnectButton from '../components/ConnectButton';
-import RevokeButton from '../components/RevokeButton';
+import Brand from '../components/Brand';
+import SummaryBar from '../components/SummaryBar';
+import Results from '../components/Results';
 
 type Finding = {
   chainId: number;
@@ -23,10 +27,11 @@ type Finding = {
   tokenAddress: Address;
   spenderLabel: string;
   spenderAddress: Address;
-  allowance: string;
+  allowancePretty: string; // human-readable
   allowanceRaw: bigint;
   decimals: number;
 };
+
 type Status = 'idle' | 'scanning' | 'done';
 type BookEntry = { id: string; name: string; address: Address; updatedAt: number; };
 type Mode = 'system' | 'light' | 'dark';
@@ -42,13 +47,13 @@ const MAX_RECENTS = 6;
 const short = (addr: string) => addr.slice(0, 6) + '…' + addr.slice(-4);
 
 export default function Home() {
-  // --- Theme ---
+  // ========== Theme ==========
   const [mode, setMode] = useState<Mode>('system');
   function applyTheme(m: Mode) {
     const root = document.documentElement;
     if (m === 'dark') root.setAttribute('data-theme', 'dark');
     else if (m === 'light') root.setAttribute('data-theme', 'light');
-    else root.removeAttribute('data-theme'); // system
+    else root.removeAttribute('data-theme');
   }
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -68,7 +73,7 @@ export default function Home() {
     applyTheme(next);
   }
 
-  // --- App state ---
+  // ========== App state ==========
   const [owner, setOwner] = useState<string>('');
   const [ensResolvedNote, setEnsResolvedNote] = useState<string>('');
   const [chainId, setChainId] = useState<number>(DEFAULT_CHAIN_ID);
@@ -82,17 +87,21 @@ export default function Home() {
   const [saveName, setSaveName] = useState('');
   const [recents, setRecents] = useState<Address[]>([]);
 
-  // checksum of the scanned address (used by RevokeButton to validate)
   const scannedChecksum = isAddress(owner as Address) ? getAddress(owner as `0x${string}`) : undefined;
 
-  // chain helpers
+  // wagmi (write + chain switch + connected account)
+  const { address: connected } = useAccount();
+  const { switchChainAsync } = useSwitchChain();
+  const { writeContractAsync } = useWriteContract();
+  const connectedChecksum = connected ? getAddress(connected) : undefined;
+
+  // quick lookup
   const chainById = useMemo(
     () => Object.fromEntries(CHAINS.map((c) => [c.id, c])),
     []
   ) as Record<number, (typeof CHAINS)[number]>;
-  const explorerBaseUrl = (cid: number) => chainById[cid]?.blockExplorers?.default?.url;
 
-  // --- Address book & recents ---
+  // ========== Address book & recents ==========
   useEffect(() => {
     if (typeof window === 'undefined') return;
     try { const raw = localStorage.getItem(BOOK_KEY); if (raw) setBook(JSON.parse(raw)); } catch {}
@@ -120,12 +129,13 @@ export default function Home() {
   }
   const deleteFromBook = (id: string) => persistBook(book.filter((b) => b.id !== id));
 
-  // --- ENS (mainnet) ---
+  // ========== ENS (mainnet) ==========
   async function resolveEnsMaybe(input: string): Promise<Address | null> {
     if (!/\.eth$/i.test(input)) return null;
     try {
       const mainnet = getPublicClient(1);
-      // @ts-ignore tolerate viem version differences
+      // viem: tolerate version differences
+      // @ts-ignore
       const addr: Address | null = await mainnet.getEnsAddress({ name: input });
       return addr ? getAddress(addr) : null;
     } catch {
@@ -133,7 +143,7 @@ export default function Home() {
     }
   }
 
-  // --- Scan ---
+  // ========== Scan ==========
   async function scan() {
     setError(''); setEnsResolvedNote('');
     let input = owner.trim();
@@ -170,6 +180,7 @@ export default function Home() {
           ];
           const results = await client.multicall({ contracts: calls, allowFailure: true });
           const dec = results[0]?.result; const decimals = typeof dec === 'number' ? dec : Number(dec ?? 18);
+
           for (let i = 1; i < results.length; i++) {
             const res = results[i];
             const allowance = (res?.result ?? 0n) as bigint;
@@ -178,16 +189,25 @@ export default function Home() {
               const asFloat = Number(formatUnits(allowance, decimals));
               const pretty = prettyAmount(asFloat) + ' ' + token.symbol;
               out.push({
-                chainId: cid, chainName: chain.name, tokenSymbol: token.symbol,
-                tokenAddress: norm(token.address), spenderLabel: sp.label, spenderAddress: norm(sp.address),
-                allowance: pretty, allowanceRaw: allowance, decimals,
+                chainId: cid,
+                chainName: chain.name,
+                tokenSymbol: token.symbol,
+                tokenAddress: norm(token.address),
+                spenderLabel: sp.label,
+                spenderAddress: norm(sp.address),
+                allowancePretty: pretty,
+                allowanceRaw: allowance,
+                decimals,
               });
             }
           }
+
+          // tiny delay to avoid hammering public RPCs
           await sleep(60);
         }
       }
 
+      // sort: chain, token, allowance desc
       out.sort(
         (a, b) =>
           a.chainName.localeCompare(b.chainName) ||
@@ -205,11 +225,59 @@ export default function Home() {
 
   const buttonLabel =
     status === 'scanning' ? 'Scanning…' : status === 'done' ? 'Scan again' : 'Scan';
+
+  // ========== Revoke (approve(spender, 0)) ==========
+  async function onRevoke(row: Finding) {
+    try {
+      if (!connectedChecksum) {
+        alert('Connect your wallet first.'); return;
+      }
+      if (!scannedChecksum || connectedChecksum !== scannedChecksum) {
+        alert('For safety, connect the SAME wallet you scanned.'); return;
+      }
+      const confirmMsg =
+        `Revoke ${row.spenderLabel} on ${row.tokenSymbol} (${row.chainName})?\n\n` +
+        `This will set allowance to 0.`;
+      if (!confirm(confirmMsg)) return;
+
+      // switch network if needed
+      // @ts-ignore tolerate wagmi versions
+      await switchChainAsync?.({ chainId: row.chainId });
+
+      await writeContractAsync({
+        chainId: row.chainId,
+        address: row.tokenAddress,
+        abi: ERC20_ABI,
+        functionName: 'approve',
+        args: [row.spenderAddress, 0n],
+      });
+
+      // Optimistic UI: remove the row locally
+      setFindings((prev) =>
+        prev.filter(
+          (f) =>
+            !(
+              f.chainId === row.chainId &&
+              f.tokenAddress === row.tokenAddress &&
+              f.spenderAddress === row.spenderAddress
+            )
+        )
+      );
+      alert('Revoke submitted. It may take a few seconds to confirm.');
+    } catch (e: any) {
+      const msg = e?.shortMessage || e?.message || String(e);
+      alert('Revoke failed: ' + msg);
+    }
+  }
+
+  // ======= Helpers for UI badges (optional use later) =======
+  const isUnlimited = (x: bigint) => x >= maxUint256 / 2n;
   const isHigh = (x: bigint, decimals: number) => {
     try { const v = Number(formatUnits(x, decimals)); return Number.isFinite(v) && v >= 10_000; }
     catch { return false; }
   };
 
+  // ========== Export / Import address book ==========
   async function exportBook() {
     const payload = JSON.stringify(book, null, 2);
     if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
@@ -241,8 +309,9 @@ export default function Home() {
     <main className="wrap">
       <Head><title>Allowance Watch</title></Head>
 
+      {/* Header */}
       <div className="header">
-        <h1>Allowance Watch</h1>
+        <Brand />
         <div className="rowFlex" style={{ gap: 8 }}>
           <div className="themeSel">
             <span>Theme</span>
@@ -256,8 +325,9 @@ export default function Home() {
         </div>
       </div>
 
-      <p className="sub">Scan ERC-20 allowances across Base, Arbitrum, BNB, Avalanche, and Ethereum. Revoke directly from results.</p>
+      <p className="sub">Scan ERC-20 allowances across Base, Arbitrum, BNB, Avalanche, Polygon, Optimism, and Ethereum. Revoke directly from results.</p>
 
+      {/* Input + Book controls */}
       <label htmlFor="owner" className="label">Wallet address</label>
       <div className="rowFlex">
         <input
@@ -348,6 +418,7 @@ export default function Home() {
         </div>
       )}
 
+      {/* Controls */}
       <div className="controls">
         <select
           value={chainId}
@@ -374,74 +445,21 @@ export default function Home() {
         </button>
       </div>
 
+      {/* Status */}
       <div className="status">
         {status === 'idle' && <span className="muted">Enter a wallet and press Scan.</span>}
         {status === 'scanning' && <span className="muted"><span className="spinner" /> Scanning… this may take a few seconds.</span>}
         {error && <div className="error">{error}</div>}
       </div>
 
+      {/* Summary + Results */}
+      {status === 'done' && findings.length > 0 && <SummaryBar findings={findings} />}
+
       {status === 'done' && findings.length === 0 && !error && (
         <div className="empty">No approvals &gt; 0 found for the configured tokens/spenders.</div>
       )}
 
-      {status === 'done' && findings.length > 0 && (
-        <>
-          <table className="table">
-            <thead>
-              <tr><th>Chain</th><th>Token</th><th>Spender</th><th>Allowance</th><th>Action</th></tr>
-            </thead>
-            <tbody>
-              {findings.map((f, i) => {
-                const exp = explorerBaseUrl(f.chainId);
-                const tokenLink = exp ? `${exp}/address/${f.tokenAddress}` : undefined;
-                const spenderLink = exp ? `${exp}/address/${f.spenderAddress}` : undefined;
-                return (
-                  <tr key={i}>
-                    <td><span className="badge">{f.chainName}</span></td>
-                    <td title={f.tokenAddress}>{tokenLink ? <a href={tokenLink} target="_blank" rel="noreferrer">{f.tokenSymbol}</a> : f.tokenSymbol}</td>
-                    <td title={f.spenderAddress}>{spenderLink ? <a href={spenderLink} target="_blank" rel="noreferrer">{f.spenderLabel}</a> : f.spenderLabel}</td>
-                    <td>
-                      {f.allowance}
-                      {(f.allowanceRaw >= maxUint256 / 2n) && <span className="tag warn">Unlimited</span>}
-                      {(f.allowanceRaw < maxUint256 / 2n) && isHigh(f.allowanceRaw, f.decimals) && <span className="tag">High</span>}
-                    </td>
-                    <td><RevokeButton finding={f} scannedChecksum={scannedChecksum} /></td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-
-          <div className="cards">
-            {findings.map((f, i) => {
-              const exp = explorerBaseUrl(f.chainId);
-              const tokenLink = exp ? `${exp}/address/${f.tokenAddress}` : undefined;
-              const spenderLink = exp ? `${exp}/address/${f.spenderAddress}` : undefined;
-              return (
-                <div className="card" key={i}>
-                  <div className="cardHead">
-                    <span className="badge">{f.chainName}</span>
-                    <div className="amt">
-                      {f.allowance}
-                      {(f.allowanceRaw >= maxUint256 / 2n) && <span className="tag warn">Unlimited</span>}
-                      {(f.allowanceRaw < maxUint256 / 2n) && isHigh(f.allowanceRaw, f.decimals) && <span className="tag">High</span>}
-                    </div>
-                  </div>
-                  <div className="row">
-                    <div className="labelSmall">Token</div>
-                    <div className="valueSmall">{tokenLink ? <a href={tokenLink} target="_blank" rel="noreferrer">{f.tokenSymbol}</a> : f.tokenSymbol}</div>
-                  </div>
-                  <div className="row">
-                    <div className="labelSmall">Spender</div>
-                    <div className="valueSmall">{spenderLink ? <a href={spenderLink} target="_blank" rel="noreferrer">{f.spenderLabel}</a> : f.spenderLabel}</div>
-                  </div>
-                  <RevokeButton finding={f} scannedChecksum={scannedChecksum} />
-                </div>
-              );
-            })}
-          </div>
-        </>
-      )}
+      <Results rows={findings} loading={status === 'scanning'} onRevoke={onRevoke} />
     </main>
   );
 }
