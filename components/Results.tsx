@@ -1,181 +1,198 @@
-// components/Results.tsx
 import React from 'react';
 
-type Props = {
-  /** Your array of scan results (whatever shape you already have). */
-  rows: any[];
-  /** Pass your loading boolean (e.g., isScanning / loading). */
-  loading?: boolean;
-  /** Optional revoke handler: (row) => void */
-  onRevoke?: (row: any) => void;
+type Finding = {
+  chainId: number;
+  chainName: string;
+  token: { symbol: string; address: `0x${string}` };
+  spender: { name: string; address: `0x${string}` };
+  allowanceRaw: bigint;
+  allowancePretty: string;
 };
 
-/** Safely pull display fields from whatever row shape you already use */
-function pickDisplay(row: any) {
-  const chain =
-    row.chainName ?? row.chain ?? row.chain_label ?? row.network ?? '—';
-  const token =
-    row.token?.symbol ?? row.tokenSymbol ?? row.symbol ?? row.token ?? '—';
-  const spender =
-    row.spender?.label ?? row.spenderLabel ?? row.spender_name ?? '—';
-  const allowancePretty =
-    row.allowancePretty ?? row.allowance ?? row.pretty ?? String(row.amount ?? '—');
+type ResultsProps = {
+  findings: Finding[];
+};
 
-  const tokenAddr: string | undefined =
-    row.token?.address ?? row.tokenAddress ?? row.token_addr ?? row.tokenAddr;
-  const spenderAddr: string | undefined =
-    row.spender?.address ?? row.spenderAddress ?? row.spender_addr ?? row.spenderAddr;
+const EXPLORER_BY_CHAIN: Record<number, string> = {
+  1: 'https://etherscan.io',
+  8453: 'https://basescan.org',
+  42161: 'https://arbiscan.io',
+  56: 'https://bscscan.com',
+  43114: 'https://snowtrace.io',
+  137: 'https://polygonscan.com',
+  10: 'https://optimistic.etherscan.io',
+};
 
-  return { chain, token, spender, allowancePretty, tokenAddr, spenderAddr };
-}
+export default function Results({ findings }: ResultsProps) {
+  if (!findings || findings.length === 0) {
+    return null; // index.tsx already shows the empty-state / summary
+  }
 
-function SkeletonCard() {
+  // Group by chain for nicer layout
+  const byChain = groupBy(findings, (f) => f.chainId);
+
   return (
-    <div className="card">
-      <div className="card-line skeleton" style={{ width: '30%' }} />
-      <div className="card-line skeleton" style={{ width: '60%' }} />
-      <div className="card-line skeleton" style={{ width: '45%' }} />
-      <div className="card-line skeleton" style={{ width: '55%' }} />
-    </div>
-  );
-}
+    <div style={{ display: 'grid', gap: 12 }}>
+      {Object.entries(byChain).map(([cid, items]) => {
+        const chainId = Number(cid);
+        const chainName = items[0]?.chainName ?? `Chain ${cid}`;
+        const explorer = EXPLORER_BY_CHAIN[chainId] || 'https://etherscan.io';
 
-export default function Results({ rows, loading, onRevoke }: Props) {
-  // --- Mobile cards ---
-  const mobile = (
-    <div className="cards">
-      {loading ? (
-        <>
-          <SkeletonCard />
-          <SkeletonCard />
-          <SkeletonCard />
-        </>
-      ) : rows?.length ? (
-        rows.map((row, i) => {
-          const d = pickDisplay(row);
-          return (
-            <div className="card" key={i}>
-              <div className="card-row">
-                <span className="card-k">Chain</span>
-                <span className="card-v">{d.chain}</span>
-              </div>
-              <div className="card-row">
-                <span className="card-k">Token</span>
-                <span className="card-v mono">
-                  {d.token}
-                  {d.tokenAddr ? (
-                    <>
-                      {' '}
+        return (
+          <section key={cid} style={{ border: '1px solid var(--border, rgba(255,255,255,0.08))', borderRadius: 12 }}>
+            <header style={{ padding: '10px 12px', fontWeight: 700, borderBottom: '1px solid var(--border, rgba(255,255,255,0.08))' }}>
+              {chainName}
+            </header>
+
+            {/* Mobile cards */}
+            <div className="cards" style={{ display: 'grid', gap: 10, padding: 12 }}>
+              {items.map((row, i) => (
+                <article
+                  key={i}
+                  className="card"
+                  style={{
+                    border: '1px solid var(--border, rgba(255,255,255,0.08))',
+                    borderRadius: 10,
+                    padding: 12,
+                    display: 'grid',
+                    gap: 8,
+                    background: 'var(--panel, rgba(255,255,255,0.02))',
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
+                    <div style={{ fontWeight: 700 }}>
+                      {row.token.symbol}
+                    </div>
+                    <div style={{ opacity: 0.85 }}>{row.allowancePretty}</div>
+                  </div>
+
+                  <div style={{ display: 'grid', gap: 6, fontSize: 13, opacity: 0.9 }}>
+                    <Field label="Token">
                       <a
-                        className="muted"
+                        href={`${explorer}/address/${row.token.address}`}
                         target="_blank"
                         rel="noreferrer"
-                        href={`https://etherscan.io/address/${d.tokenAddr}`}
                       >
-                        ↗
+                        {short(row.token.address)}
                       </a>
-                    </>
-                  ) : null}
-                </span>
-              </div>
-              <div className="card-row">
-                <span className="card-k">Spender</span>
-                <span className="card-v">
-                  {d.spender}{' '}
-                  {d.spenderAddr ? (
-                    <a
-                      className="muted"
-                      target="_blank"
-                      rel="noreferrer"
-                      href={`https://etherscan.io/address/${d.spenderAddr}`}
-                    >
-                      ↗
-                    </a>
-                  ) : null}
-                </span>
-              </div>
-              <div className="card-row">
-                <span className="card-k">Allowance</span>
-                <span className="card-v mono">{d.allowancePretty}</span>
-              </div>
+                    </Field>
 
-              {onRevoke ? (
-                <div className="card-actions">
-                  <button className="btn secondary" onClick={() => onRevoke(row)}>
-                    Revoke
-                  </button>
-                </div>
-              ) : null}
-            </div>
-          );
-        })
-      ) : (
-        <div className="empty">No results yet. Enter a wallet and Scan.</div>
-      )}
-    </div>
-  );
-
-  // --- Desktop table (kept for wide screens) ---
-  const desktop = (
-    <div className="table-wrap">
-      <table className="results-table">
-        <thead>
-          <tr>
-            <th>Chain</th>
-            <th>Token</th>
-            <th>Spender</th>
-            <th>Allowance</th>
-            {onRevoke ? <th /> : null}
-          </tr>
-        </thead>
-        <tbody>
-          {loading ? (
-            <>
-              {[0, 1, 2].map((i) => (
-                <tr key={i}>
-                  <td colSpan={onRevoke ? 5 : 4}>
-                    <div className="skeleton" style={{ height: 16, width: '100%' }} />
-                  </td>
-                </tr>
+                    <Field label="Spender">
+                      <a
+                        href={`${explorer}/address/${row.spender.address}`}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        {row.spender.name || 'Spender'} — {short(row.spender.address)}
+                      </a>
+                    </Field>
+                  </div>
+                </article>
               ))}
-            </>
-          ) : rows?.length ? (
-            rows.map((row, i) => {
-              const d = pickDisplay(row);
-              return (
-                <tr key={i}>
-                  <td>{d.chain}</td>
-                  <td className="mono">{d.token}</td>
-                  <td>{d.spender}</td>
-                  <td className="mono">{d.allowancePretty}</td>
-                  {onRevoke ? (
-                    <td>
-                      <button className="btn secondary sm" onClick={() => onRevoke(row)}>
-                        Revoke
-                      </button>
-                    </td>
-                  ) : null}
-                </tr>
-              );
-            })
-          ) : (
-            <tr>
-              <td colSpan={onRevoke ? 5 : 4} className="empty">
-                No results yet. Enter a wallet and Scan.
-              </td>
-            </tr>
-          )}
-        </tbody>
-      </table>
+            </div>
+
+            {/* Desktop table */}
+            <div className="tableWrap" style={{ overflowX: 'auto', padding: '0 12px 12px' }}>
+              <table
+                className="table"
+                style={{
+                  width: '100%',
+                  borderCollapse: 'separate',
+                  borderSpacing: 0,
+                  fontSize: 14,
+                }}
+              >
+                <thead>
+                  <tr>
+                    <Th>Token</Th>
+                    <Th>Spender</Th>
+                    <Th style={{ textAlign: 'right' }}>Allowance</Th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {items.map((row, i) => (
+                    <tr key={`t-${i}`}>
+                      <Td>
+                        <a
+                          href={`${explorer}/address/${row.token.address}`}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          {row.token.symbol}
+                        </a>{' '}
+                        <span style={{ opacity: 0.65 }}>{short(row.token.address)}</span>
+                      </Td>
+                      <Td>
+                        <a
+                          href={`${explorer}/address/${row.spender.address}`}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          {row.spender.name || 'Spender'}
+                        </a>{' '}
+                        <span style={{ opacity: 0.65 }}>{short(row.spender.address)}</span>
+                      </Td>
+                      <Td style={{ textAlign: 'right' }}>
+                        {row.allowancePretty}
+                      </Td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        );
+      })}
     </div>
   );
+}
 
+function short(addr: string) {
+  return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
+}
+
+function groupBy<T, K extends string | number>(arr: T[], keyFn: (t: T) => K): Record<K, T[]> {
+  return arr.reduce((acc, it) => {
+    const k = keyFn(it);
+    (acc[k] ||= []).push(it);
+    return acc;
+  }, {} as Record<K, T[]>);
+}
+
+function Th(props: React.HTMLAttributes<HTMLTableCellElement>) {
   return (
-    <>
-      {/* mobile-first cards (visible < 768px) */}
-      {mobile}
-      {/* desktop table (hidden < 768px) */}
-      {desktop}
-    </>
+    <th
+      {...props}
+      style={{
+        textAlign: 'left',
+        padding: '10px 12px',
+        borderBottom: '1px solid var(--border, rgba(255,255,255,0.08))',
+        whiteSpace: 'nowrap',
+        ...(props.style || {}),
+      }}
+    />
   );
-                                                      }
+}
+
+function Td(props: React.HTMLAttributes<HTMLTableCellElement>) {
+  return (
+    <td
+      {...props}
+      style={{
+        padding: '10px 12px',
+        borderBottom: '1px solid var(--border, rgba(255,255,255,0.06))',
+        verticalAlign: 'top',
+        ...(props.style || {}),
+      }}
+    />
+  );
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '88px 1fr', gap: 8 }}>
+      <div style={{ opacity: 0.65 }}>{label}</div>
+      <div>{children}</div>
+    </div>
+  );
+}
