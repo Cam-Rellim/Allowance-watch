@@ -1,29 +1,33 @@
 import React from 'react';
 
-type BrandProps = {
-  /** Small line under the product name, e.g. "Allowance Watch" */
-  subtitle?: string;
-};
-
-export default function Brand({ subtitle }: BrandProps) {
+export default function Brand({ subtitle }: { subtitle?: string }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-      {/* favicon doubles as a tiny logo */}
+    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
       <img
         src="/favicon.svg"
-        alt=""
-        width={28}
-        height={28}
+        alt="CoinIntel Pro"
+        width={40}
+        height={40}
         style={{ display: 'block' }}
       />
       <div>
-        <div style={{ fontWeight: 800, letterSpacing: 0.2 }}>
-          CoinIntel <span style={{ opacity: 0.8, fontWeight: 700 }}>Pro</span>
+        <div style={{ lineHeight: 1 }}>
+          <span style={{ fontWeight: 800, fontSize: 22 }}>CoinIntel</span>{' '}
+          <span
+            style={{
+              fontWeight: 800,
+              fontSize: 22,
+              background:
+                'linear-gradient(90deg, #8ab4ff 0%, #c1d4ff 45%, #ffffff 100%)',
+              WebkitBackgroundClip: 'text',
+              WebkitTextFillColor: 'transparent',
+            }}
+          >
+            Pro
+          </span>
         </div>
         {subtitle ? (
-          <div style={{ fontSize: 12, opacity: 0.75, marginTop: 2 }}>
-            {subtitle}
-          </div>
+          <div style={{ opacity: 0.75, marginTop: 2, fontSize: 13 }}>{subtitle}</div>
         ) : null}
       </div>
     </div>
