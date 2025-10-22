@@ -57,3 +57,55 @@ th{background:var(--th)}
 .valueSmall{overflow-wrap:anywhere}
 
 @media (max-width:640px){.table{display:none}.cards{display:block}}
+
+/* --- Results: mobile cards --- */
+.cards { display: block; }
+.card {
+  background: var(--card-bg, rgba(255,255,255,0.04));
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin: 10px 0;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+}
+.card-row {
+  display: flex; justify-content: space-between; gap: 12px;
+  padding: 4px 0;
+}
+.card-k { color: #9aa4b2; font-size: 12px; }
+.card-v { color: var(--fg, #e5e7eb); font-weight: 500; }
+.card-actions { margin-top: 8px; display: flex; justify-content: flex-end; }
+
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
+.muted { color: #9aa4b2; text-decoration: none; }
+.muted:hover { text-decoration: underline; }
+
+.btn { border: 1px solid rgba(255,255,255,0.12); background: transparent; color: inherit; padding: 8px 12px; border-radius: 10px; }
+.btn.sm { padding: 6px 10px; font-size: 12.5px; }
+.btn.secondary { background: rgba(255,255,255,0.06); }
+.btn.secondary:hover { background: rgba(255,255,255,0.10); }
+
+/* skeleton shimmer */
+.skeleton {
+  position: relative; overflow: hidden; background: #1f2937; border-radius: 8px;
+}
+.skeleton::after {
+  content: ""; position: absolute; inset: 0; transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.08), transparent);
+  animation: shimmer 1.2s infinite;
+}
+.card-line { height: 14px; margin: 8px 0; }
+@keyframes shimmer { 100% { transform: translateX(100%); } }
+
+/* Desktop table stays as-is but hidden on small screens */
+.table-wrap { display: none; }
+
+/* ≥768px: show table, hide cards */
+@media (min-width: 768px) {
+  .cards { display: none; }
+  .table-wrap { display: block; }
+  .results-table { width: 100%; border-collapse: collapse; }
+  .results-table th, .results-table td { border: 1px solid #2a2f3a; padding: 10px; }
+  .results-table th { text-align: left; color: #9aa4b2; font-weight: 600; }
+  .empty { padding: 14px; color: #9aa4b2; }
+}
