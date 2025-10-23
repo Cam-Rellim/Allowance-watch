@@ -15,7 +15,7 @@ import AddressBook from '../components/AddressBook';
 import SummaryBar from '../components/SummaryBar';
 import Results, { type Finding as ResultsFinding } from '../components/Results';
 
-import '../styles/home.css';
+import '../Styles/home.css';
 
 // --- local shapes (match config files) ---
 type Token = { address: Address; symbol: string; decimals: number };
