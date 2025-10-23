@@ -14,13 +14,14 @@ import SaveAddressButton from '../components/SaveAddressButton';
 import AddressBook from '../components/AddressBook';
 import SummaryBar from '../components/SummaryBar';
 import Results, { type Finding as ResultsFinding } from '../components/Results';
+import ThemeToggle from '../components/ThemeToggle';
+import RecentAddresses, { pushRecentAddress } from '../components/RecentAddresses';
 
 // ---- local shapes ----
 type Token = { address: Address; symbol: string; decimals: number };
 type Spender = { address: Address; name: string };
 type Finding = ResultsFinding;
 
-// pretty print a bigint with token decimals
 function prettyAmount(raw: bigint, decimals: number) {
   if (raw === 0n) return '0';
   const neg = raw < 0n ? '-' : '';
@@ -41,8 +42,9 @@ export default function Home() {
   const [findings, setFindings] = useState<Finding[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [failCount, setFailCount] = useState(0);
 
-  // derive a simple [{id,name}] list defensively (works with any CHAINS shape)
+  // chains list (robust to shapes)
   type SimpleChain = { id: number; name: string };
   const chainsList: SimpleChain[] = useMemo(() => {
     const vals = Object.values(CHAINS as any);
@@ -50,7 +52,6 @@ export default function Home() {
       id: Number(c?.id ?? c),
       name: String(c?.name ?? c),
     }));
-    // de-dupe just in case
     const seen = new Set<number>();
     return list.filter((c) => !seen.has(c.id) && seen.add(c.id)).sort((a, b) => a.name.localeCompare(b.name));
   }, []);
@@ -76,6 +77,7 @@ export default function Home() {
   async function handleScan() {
     setErr(null);
     setFindings([]);
+    setFailCount(0);
 
     let owner: Address;
     try {
@@ -85,10 +87,14 @@ export default function Home() {
       return;
     }
 
+    // store in recent chips
+    try { pushRecentAddress(owner); } catch {}
+
     setLoading(true);
     try {
       const chainIds = scanAll ? chainsList.map((c) => c.id) : [selectedChainId];
       const all: Finding[] = [];
+      let failures = 0;
 
       for (const chainId of chainIds) {
         const tokens = (TOKENS_BY_CHAIN as any)[chainId] as Token[] | undefined;
@@ -97,7 +103,6 @@ export default function Home() {
 
         const client = getPublicClient(chainId);
 
-        // build multicall batch
         const contracts = [];
         for (const t of tokens) {
           for (const s of spenders) {
@@ -112,7 +117,6 @@ export default function Home() {
 
         const res = await client.multicall({ contracts, allowFailure: true });
 
-        // flatten results
         let i = 0;
         for (const t of tokens) {
           for (const s of spenders) {
@@ -132,12 +136,22 @@ export default function Home() {
                   risk: riskFrom(raw, t.decimals),
                 });
               }
+            } else {
+              failures++;
             }
           }
         }
       }
 
       setFindings(all);
+      setFailCount(failures);
+
+      if (all.length === 0 && failures === 0) {
+        // Transparent note: curated list limitation
+        setErr(
+          'No allowances found among the curated tokens/spenders scanned. This does not guarantee zero allowances overall. We’ll expand coverage next.'
+        );
+      }
     } catch (e: any) {
       setErr(e?.message || String(e));
     } finally {
@@ -153,14 +167,16 @@ export default function Home() {
 
       <main className="wrap">
         {/* Header */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
           <Brand subtitle="Allowance Watch" />
-          <ConnectButton />
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+            <ThemeToggle />
+            <ConnectButton />
+          </div>
         </div>
 
         <p style={{ marginTop: 12, opacity: 0.9 }}>
-          Scan ERC-20 allowances across Base, Arbitrum, BNB, Avalanche, Polygon, Optimism, and
-          Ethereum. Revoke directly from results.
+          Scan ERC-20 allowances across Base, Arbitrum, BNB, Avalanche, Polygon, Optimism, and Ethereum. Revoke directly from results.
         </p>
 
         {/* Form */}
@@ -175,6 +191,8 @@ export default function Home() {
                 onChange={(e) => setInput(e.target.value)}
                 spellCheck={false}
               />
+              {/* Recent chips */}
+              <RecentAddresses onSelect={(addr) => setInput(addr)} />
             </div>
 
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
@@ -212,6 +230,20 @@ export default function Home() {
               </button>
             </div>
           </div>
+
+          {failCount > 0 && (
+            <div
+              style={{
+                marginTop: 12,
+                padding: 12,
+                borderRadius: 10,
+                border: '1px solid #856404',
+                background: '#3a320f',
+              }}
+            >
+              {failCount} contract calls failed and were skipped. This can happen with unreliable RPCs; results still include all successful calls.
+            </div>
+          )}
 
           {err && (
             <div
