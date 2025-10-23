@@ -15,13 +15,9 @@ import AddressBook from '../components/AddressBook';
 import SummaryBar from '../components/SummaryBar';
 import Results, { type Finding as ResultsFinding } from '../components/Results';
 
-import '../Styles/home.css';
-
-// --- local shapes (match config files) ---
+// ---- local shapes ----
 type Token = { address: Address; symbol: string; decimals: number };
 type Spender = { address: Address; name: string };
-
-// unify with Results’ Finding shape so TS is happy everywhere
 type Finding = ResultsFinding;
 
 // pretty print a bigint with token decimals
@@ -46,16 +42,17 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  // derive a simple [{id,name}] list from CHAINS no matter how it's typed
+  // derive a simple [{id,name}] list defensively (works with any CHAINS shape)
   type SimpleChain = { id: number; name: string };
   const chainsList: SimpleChain[] = useMemo(() => {
     const vals = Object.values(CHAINS as any);
-    const list = vals.map((c: any) =>
-      typeof c === 'number'
-        ? ({ id: c, name: String(c) } as SimpleChain)
-        : ({ id: Number(c.id), name: String(c.name) } as SimpleChain)
-    );
-    return list.sort((a, b) => a.name.localeCompare(b.name));
+    const list = vals.map((c: any) => ({
+      id: Number(c?.id ?? c),
+      name: String(c?.name ?? c),
+    }));
+    // de-dupe just in case
+    const seen = new Set<number>();
+    return list.filter((c) => !seen.has(c.id) && seen.add(c.id)).sort((a, b) => a.name.localeCompare(b.name));
   }, []);
 
   async function normalizeToAddress(text: string): Promise<Address> {
@@ -70,7 +67,6 @@ export default function Home() {
   }
 
   function riskFrom(raw: bigint, decimals: number): 'high' | 'med' | 'low' {
-    // simple heuristic by whole-token size
     const whole = Number(prettyAmount(raw, decimals).split('.')[0] || '0');
     if (whole >= 1_000_000) return 'high';
     if (whole >= 10_000) return 'med';
@@ -95,14 +91,13 @@ export default function Home() {
       const all: Finding[] = [];
 
       for (const chainId of chainIds) {
-        // token + spender config for this chain
         const tokens = (TOKENS_BY_CHAIN as any)[chainId] as Token[] | undefined;
         const spenders = (SPENDERS_BY_CHAIN as any)[chainId] as Spender[] | undefined;
         if (!tokens?.length || !spenders?.length) continue;
 
         const client = getPublicClient(chainId);
 
-        // multicall allowance(owner, spender) for each token/spender pair
+        // build multicall batch
         const contracts = [];
         for (const t of tokens) {
           for (const s of spenders) {
@@ -127,7 +122,6 @@ export default function Home() {
               if (raw > 0n) {
                 const chainCfg = (CHAINS as any)[chainId] ?? { id: chainId, name: String(chainId) };
                 const chainName = String(chainCfg.name ?? chainId);
-
                 all.push({
                   chainId,
                   chainName,
@@ -172,7 +166,7 @@ export default function Home() {
         {/* Form */}
         <section className="panel" style={{ marginTop: 14 }}>
           <div className="row" style={{ alignItems: 'end' }}>
-            <div>
+            <div className="col">
               <div className="label">Wallet address</div>
               <input
                 className="input"
@@ -190,7 +184,7 @@ export default function Home() {
           </div>
 
           <div className="row" style={{ marginTop: 12, alignItems: 'center' }}>
-            <div>
+            <div className="col">
               <div className="label">Chain</div>
               <select
                 className="select"
@@ -199,9 +193,7 @@ export default function Home() {
                 disabled={scanAll}
               >
                 {chainsList.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
+                  <option key={c.id} value={c.id}>{c.name}</option>
                 ))}
               </select>
             </div>
@@ -244,4 +236,4 @@ export default function Home() {
       </main>
     </>
   );
-  }
+}
