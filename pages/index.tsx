@@ -1,254 +1,220 @@
-// pages/index.tsx
+import React, { useMemo, useState } from 'react';
 import Head from 'next/head';
-import { useEffect, useMemo, useState } from 'react';
-import ThemeToggle from '../components/ThemeToggle';
+import { isAddress, getAddress, formatUnits, maxUint256 } from 'viem';
+import { useAccount } from 'wagmi';
+
 import ConnectButton from '../components/ConnectButton';
 import Brand from '../components/Brand';
-import SummaryBar, { type Finding } from '../components/SummaryBar';
+import SummaryBar from '../components/SummaryBar';
 import Results from '../components/Results';
+import type { Finding } from '../components/Results';
 
 import { getPublicClient } from '../lib/networks';
 import { ERC20_ABI } from '../lib/erc20';
-import { normalizeInputToAddressOrEns } from '../lib/addr';
-
+import { CHAINS } from '../config/chains';
 import { TOKENS_BY_CHAIN } from '../config/tokens';
 import { SPENDERS_BY_CHAIN } from '../config/spenders';
-import { CHAINS } from '../config/chains';
 
-type BookItem = { address: `0x${string}`; name?: string };
+type ChainListItem = { id: number; name: string };
 
-const RECENT_KEY = 'aw_recent';
-const BOOK_KEY = 'aw_book';
-
-function loadRecent(): string[] {
-  try { return JSON.parse(localStorage.getItem(RECENT_KEY) || '[]'); } catch { return []; }
-}
-function saveRecent(list: string[]) {
-  localStorage.setItem(RECENT_KEY, JSON.stringify(list.slice(0, 8)));
-}
-function loadBook(): Record<string, BookItem> {
-  try { return JSON.parse(localStorage.getItem(BOOK_KEY) || '{}'); } catch { return {}; }
-}
-function saveBook(book: Record<string, BookItem>) {
-  localStorage.setItem(BOOK_KEY, JSON.stringify(book));
+function prettyAmount(raw: string) {
+  // Raw is a decimal string from formatUnits
+  const n = Number(raw);
+  if (!isFinite(n)) return raw;
+  // Limit decimals for readability
+  return new Intl.NumberFormat(undefined, {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: n < 1 ? 6 : n < 100 ? 4 : 2,
+  }).format(n);
 }
 
 export default function Home() {
-  // ----- UI state
-  const [addrInput, setAddrInput] = useState('');
-  const [selectedChain, setSelectedChain] = useState<number>(8453); // Base default
-  const [scanAll, setScanAll] = useState(true);
+  const { address: connectedAddress } = useAccount();
+
+  const [input, setInput] = useState<string>('');
+  const [selectedChainId, setSelectedChainId] = useState<number>(0); // 0 = All
   const [loading, setLoading] = useState(false);
   const [findings, setFindings] = useState<Finding[]>([]);
-  const [errors, setErrors] = useState<{ chain: string; msg: string }[]>([]);
-  const [recent, setRecent] = useState<string[]>([]);
-  const [book, setBook] = useState<Record<string, BookItem>>({});
-  const [bookOpen, setBookOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  // ----- Init persisted bits
-  useEffect(() => { setRecent(loadRecent()); setBook(loadBook()); }, []);
-
-  const chainOptions = useMemo(() => {
-    // CHAINS is Record<number, {id,name,...}>
-    return Object.values(CHAINS as Record<string, any>)
-      .map((c) => ({ id: Number(c.id ?? c.chainId ?? c), name: c.name ?? c.title ?? String(c.id) }))
-      .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  // Build a user-friendly chain list from your CHAINS map
+  const chainsList: ChainListItem[] = useMemo(() => {
+    const items: ChainListItem[] = Object.entries(CHAINS).map(([k, v]) => {
+      const name = (v as any)?.name ?? `Chain ${k}`;
+      return { id: Number(k), name };
+    });
+    // sort by name asc, put mainnet first if present
+    items.sort((a, b) => a.name.localeCompare(b.name));
+    return items;
   }, []);
 
-  // ----- Helpers
-  function remember(addr: string) {
-    const next = [addr, ...recent.filter((a) => a.toLowerCase() !== addr.toLowerCase())];
-    setRecent(next);
-    saveRecent(next);
-  }
-
-  function saveCurrentToBook(addr: `0x${string}`) {
-    const name = prompt('Name this address (optional):') || undefined;
-    const next = { ...book, [addr.toLowerCase()]: { address: addr, name } };
-    setBook(next);
-    saveBook(next);
-  }
+  const ownerInput = (input || connectedAddress || '').trim();
 
   async function scan() {
-    setErrors([]);
+    setError(null);
     setFindings([]);
+    if (!ownerInput) {
+      setError('Enter a wallet address or connect a wallet.');
+      return;
+    }
+    if (!isAddress(ownerInput)) {
+      setError('That does not look like a valid EVM address.');
+      return;
+    }
+
+    const owner = getAddress(ownerInput) as `0x${string}`;
+    const chainIds =
+      selectedChainId === 0
+        ? (Object.keys(CHAINS).map((k) => Number(k)) as number[])
+        : [selectedChainId];
+
     setLoading(true);
+
     try {
-      const owner = await normalizeInputToAddressOrEns(addrInput);
-      remember(owner);
+      const all: Finding[] = [];
 
-      const targetChainIds = scanAll
-        ? Object.keys(CHAINS).map((k) => Number(k))
-        : [selectedChain];
+      for (const cid of chainIds) {
+        const chainCfg = (CHAINS as any)[cid];
+        if (!chainCfg) continue;
 
-      const allFindings: Finding[] = [];
-
-      for (const cid of targetChainIds) {
-        const cfg: any = (CHAINS as any)[cid];
-        const chainName = cfg?.name ?? `Chain ${cid}`;
+        const chainName: string = chainCfg.name ?? `Chain ${cid}`;
         const client = getPublicClient(cid);
 
-        const tokens = (TOKENS_BY_CHAIN as any)[cid] || [];
-        const spenders = (SPENDERS_BY_CHAIN as any)[cid] || [];
-        if (!tokens.length || !spenders.length) continue;
+        const tokens: Array<{ address: `0x${string}`; symbol: string; decimals: number }> =
+          (TOKENS_BY_CHAIN as any)[cid] ?? [];
+        const spenders: Array<{ address: `0x${string}`; name?: string }> =
+          (SPENDERS_BY_CHAIN as any)[cid] ?? [];
 
-        // build multicall list
-        const contracts = [];
+        if (!tokens.length || !spenders.length) {
+          // No config for this chain; skip silently (or set a soft note).
+          continue;
+        }
+
+        // Build multicall set: for each token x spender: allowance(owner, spender)
+        const calls = [];
         for (const t of tokens) {
           for (const s of spenders) {
-            contracts.push({
-              address: t.address as `0x${string}`,
+            calls.push({
+              address: t.address,
               abi: ERC20_ABI,
               functionName: 'allowance' as const,
-              args: [owner, s.address as `0x${string}`],
+              args: [owner, s.address],
             });
           }
         }
 
-        try {
-          const res = await client.multicall({ contracts, allowFailure: true });
-          let idx = 0;
-          for (const t of tokens) {
-            for (const s of spenders) {
-              const out = res[idx++];
-              if (!out || out.status !== 'success') continue;
-              const raw = BigInt(out.result as unknown as string);
-              if (raw > 0n) {
-                // format with token decimals if present
-                const d = Number(t.decimals ?? 18);
-                const pretty =
-                  Number(raw) === 0
-                    ? '0'
-                    : (Number(raw) / Math.pow(10, d)).toLocaleString(undefined, {
-                        maximumFractionDigits: 6,
-                      }) + ` ${t.symbol}`;
-                allFindings.push({
-                  chainId: cid,
-                  chain: chainName,
-                  token: t.symbol,
-                  spender: s.address,
-                  spenderName: s.name,
-                  allowance: pretty,
-                });
-              }
+        // Fallback: if client.multicall not available in your wrapper, sequentially read
+        let results: Array<{ result?: bigint | null }> = [];
+        if (typeof (client as any).multicall === 'function') {
+          const mc = await (client as any).multicall({ contracts: calls });
+          results = mc as Array<{ result?: bigint | null }>;
+        } else {
+          for (const c of calls) {
+            try {
+              const r = await (client as any).readContract(c);
+              results.push({ result: r as bigint });
+            } catch {
+              results.push({ result: null });
             }
           }
-        } catch (err: any) {
-          const msg = err?.shortMessage || err?.message || String(err);
-          setErrors((prev) => [...prev, { chain: chainName, msg }]);
+        }
+
+        // Map back results
+        let idx = 0;
+        for (const t of tokens) {
+          for (const s of spenders) {
+            const r = results[idx++]?.result ?? 0n;
+            if (r > 0n) {
+              const pretty =
+                r === maxUint256
+                  ? 'Unlimited'
+                  : `${prettyAmount(formatUnits(r, t.decimals))} ${t.symbol}`;
+
+              all.push({
+                chainId: cid,
+                chain: chainName,
+                token: t.symbol,
+                tokenAddress: t.address,
+                spender: s.address,
+                spenderName: s.name,
+                allowance: pretty,
+              });
+            }
+          }
         }
       }
 
-      setFindings(allFindings);
+      // Sort by chain then token for stability
+      all.sort((a, b) => (a.chain === b.chain ? a.token.localeCompare(b.token) : a.chain.localeCompare(b.chain)));
+      setFindings(all);
     } catch (e: any) {
-      alert(e?.message || String(e));
+      setError(e?.message || 'Scan failed.');
     } finally {
       setLoading(false);
     }
   }
 
-  // ----- Render
   return (
     <>
       <Head>
-        <title>CoinIntel Pro — Allowance Watch</title>
+        <title>Allowance Watch</title>
         <meta name="viewport" content="width=device-width, initial-scale=1" />
       </Head>
 
       <main className="wrap">
         {/* Header */}
-        <div className="row space-between center">
+        <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
           <Brand subtitle="Allowance Watch" />
-          <div className="row center" style={{ gap: 8 }}>
-            <ThemeToggle />
-            <ConnectButton />
-          </div>
+          <ConnectButton />
         </div>
 
-        <p className="lede">
-          Scan ERC-20 allowances across Base, Arbitrum, BNB, Avalanche, Polygon, Optimism, and
-          Ethereum. Revoke directly from results.
-        </p>
-
-        {/* Form card */}
-        <div className="card">
-          <div className="grid2">
-            <div>
-              <label className="label">Wallet address</label>
+        {/* Controls */}
+        <div className="card" style={{ marginTop: 12 }}>
+          <div className="row" style={{ gap: 12, alignItems: 'center' }}>
+            <div className="col">
+              <label className="label">Wallet Address</label>
               <input
                 className="input"
-                placeholder="0x… or ENS (name.eth)"
-                value={addrInput}
-                onChange={(e) => setAddrInput(e.target.value)}
+                placeholder="0x… or connect"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                inputMode="text"
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
               />
-              {/* Recent */}
-              {recent.length > 0 && (
-                <div className="chips">
-                  {recent.map((a) => (
-                    <button key={a} className="chip" onClick={() => setAddrInput(a)}>
-                      {a.slice(0, 6)}…{a.slice(-4)}
-                    </button>
-                  ))}
-                </div>
-              )}
-              <div className="row" style={{ gap: 10, marginTop: 6 }}>
-                <button
-                  className="linkish"
-                  onClick={async () => {
-                    try {
-                      const normalized = await normalizeInputToAddressOrEns(addrInput);
-                      saveCurrentToBook(normalized);
-                      alert('Saved to Address Book.');
-                    } catch (e: any) {
-                      alert(e?.message || String(e));
-                    }
-                  }}
-                >
-                  ★ Save
-                </button>
-                <button className="linkish" onClick={() => setBookOpen(true)}>
-                  Address Book
-                </button>
-              </div>
+              <div className="hint">Connected: {connectedAddress ? getAddress(connectedAddress) : '—'}</div>
             </div>
 
             <div>
               <label className="label">Chain</label>
               <select
-                className="input"
-                value={selectedChain}
-                onChange={(e) => setSelectedChain(Number(e.target.value))}
-                disabled={scanAll}
+                className="select"
+                value={selectedChainId}
+                onChange={(e) => setSelectedChainId(Number(e.target.value))}
               >
-                {chainOptions.map((c) => (
+                <option value={0}>All supported</option>
+                {chainsList.map((c) => (
                   <option key={c.id} value={c.id}>
                     {c.name}
                   </option>
                 ))}
               </select>
+            </div>
 
-              <label className="check">
-                <input
-                  type="checkbox"
-                  checked={scanAll}
-                  onChange={(e) => setScanAll(e.target.checked)}
-                />
-                <span>Scan all chains</span>
-              </label>
-
+            <div style={{ alignSelf: 'flex-end' }}>
               <button className="btn" onClick={scan} disabled={loading}>
                 {loading ? 'Scanning…' : 'Scan'}
               </button>
             </div>
           </div>
-        </div>
 
-        {/* Errors per chain */}
-        {errors.map((er, i) => (
-          <div key={i} className="alert">
-            <strong>{er.chain}:</strong> {er.msg}
-          </div>
-        ))}
+          {error && (
+            <div className="alert" role="alert" style={{ marginTop: 12 }}>
+              {error}
+            </div>
+          )}
+        </div>
 
         {/* Summary + Results */}
         <div style={{ marginTop: 14 }}>
@@ -256,51 +222,6 @@ export default function Home() {
           <Results findings={findings} />
         </div>
       </main>
-
-      {/* Address Book modal (very small & simple) */}
-      {bookOpen && (
-        <div className="modal-backdrop" onClick={() => setBookOpen(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h3>Address Book</h3>
-            {!Object.keys(book).length && <p>No saved addresses yet.</p>}
-            {!!Object.keys(book).length && (
-              <ul className="book">
-                {Object.values(book).map((b) => (
-                  <li key={b.address.toLowerCase()}>
-                    <button
-                      className="chip"
-                      onClick={() => {
-                        setAddrInput(b.address);
-                        setBookOpen(false);
-                      }}
-                      title={b.address}
-                    >
-                      {b.name ? `${b.name} — ` : ''}
-                      {b.address.slice(0, 6)}…{b.address.slice(-4)}
-                    </button>
-                    <button
-                      className="linkish danger"
-                      onClick={() => {
-                        const next = { ...book };
-                        delete next[b.address.toLowerCase()];
-                        setBook(next);
-                        saveBook(next);
-                      }}
-                    >
-                      Delete
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-            <div className="row right">
-              <button className="btn" onClick={() => setBookOpen(false)}>
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </>
   );
 }
