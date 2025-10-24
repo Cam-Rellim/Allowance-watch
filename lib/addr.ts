@@ -1,19 +1,25 @@
 // lib/addr.ts
-import { getAddress } from 'viem';
+import { getAddress, isAddress } from 'viem';
+import { getPublicClient } from './networks';
 
-// Strip invisible chars some mobile keyboards paste
-const ZW = /[\u200B\u200C\u200D\uFEFF]/g;
-const QUOTES = /[“”‘’"']/g;
+/** Resolve ENS on mainnet; checksum EVM addresses; throw on invalid. */
+export async function normalizeInputToAddressOrEns(input: string): Promise<`0x${string}`> {
+  const value = (input || '').trim();
+  if (!value) throw new Error('Empty address/ENS.');
 
-/** Return a checksummed EVM address or throw with a human message. */
-export function normalizeAddressStrict(input?: string | null): `0x${string}` {
-  if (!input) throw new Error('empty address');
-  const raw = String(input).replace(ZW, '').replace(QUOTES, '').trim();
-  if (!raw.startsWith('0x')) throw new Error('must start with 0x');
-  if (!/^0x[0-9a-fA-F]{40}$/.test(raw)) throw new Error('must be 20 bytes (40 hex chars)');
-  try {
-    return getAddress(raw); // EIP-55 checksummed
-  } catch {
-    throw new Error('checksum mismatch');
+  // ENS-like?
+  if (value.includes('.')) {
+    const mainnet = getPublicClient(1);
+    const resolved = await mainnet.getEnsAddress({ name: value }).catch(() => null);
+    if (!resolved) throw new Error(`ENS not found: ${value}`);
+    return getAddress(resolved);
   }
+
+  // Hex address
+  if (!value.startsWith('0x') || value.length !== 42 || !isAddress(value)) {
+    throw new Error(
+      'Address must be a checksummed 0x… value with 40 hex chars (20 bytes), or a valid ENS.'
+    );
+  }
+  return getAddress(value);
 }
