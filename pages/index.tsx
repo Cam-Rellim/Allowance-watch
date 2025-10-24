@@ -1,199 +1,249 @@
-import React, { useMemo, useState } from 'react';
 import Head from 'next/head';
+import React, { useCallback, useMemo, useState } from 'react';
 import { isAddress, getAddress, formatUnits, maxUint256 } from 'viem';
-import { useAccount } from 'wagmi';
 
-import ConnectButton from '../components/ConnectButton';
 import Brand from '../components/Brand';
+import ThemeToggle from '../components/ThemeToggle';
+import ConnectButton from '../components/ConnectButton';
 import SummaryBar from '../components/SummaryBar';
 import Results from '../components/Results';
-import type { Finding } from '../components/Results';
+import SaveAddressButton from '../components/SaveAddressButton';
+import AddressBook from '../components/AddressBook';
+import RecentAddresses from '../components/RecentAddresses';
 
 import { getPublicClient } from '../lib/networks';
 import { ERC20_ABI } from '../lib/erc20';
+
 import { CHAINS } from '../config/chains';
 import { TOKENS_BY_CHAIN } from '../config/tokens';
 import { SPENDERS_BY_CHAIN } from '../config/spenders';
 
-type ChainListItem = { id: number; name: string };
+// ---- Types (local superset so we stay compatible with both components) ----
+type RiskLevel = 'high' | 'medium' | 'low' | 'info';
 
-function prettyAmount(raw: string) {
-  // Raw is a decimal string from formatUnits
-  const n = Number(raw);
-  if (!isFinite(n)) return raw;
-  // Limit decimals for readability
-  return new Intl.NumberFormat(undefined, {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: n < 1 ? 6 : n < 100 ? 4 : 2,
-  }).format(n);
+type Finding = {
+  chainId: number;
+  chain: string;
+  token: string;
+  tokenAddress?: `0x${string}`;
+  spender: `0x${string}`;
+  spenderName?: string;
+  allowance: string; // human formatted
+  risk: RiskLevel;
+};
+
+// ---- Helpers ----
+function short(addr: string, left = 6, right = 4) {
+  if (!addr) return '';
+  return addr.slice(0, left) + '…' + addr.slice(-right);
 }
 
-export default function Home() {
-  const { address: connectedAddress } = useAccount();
+async function resolveOwner(input: string): Promise<`0x${string}` | null> {
+  const trimmed = input.trim();
+  if (!trimmed) return null;
 
-  const [input, setInput] = useState<string>('');
-  const [selectedChainId, setSelectedChainId] = useState<number>(0); // 0 = All
+  // Try EVM address (lenient), then checksum it
+  if (isAddress(trimmed, { strict: false })) {
+    try {
+      return getAddress(trimmed);
+    } catch {
+      return null;
+    }
+  }
+
+  // Optional ENS resolution against mainnet, if available
+  try {
+    if (trimmed.endsWith('.eth')) {
+      const mainnetId = 1;
+      const client = getPublicClient(mainnetId);
+      if (client && 'getEnsAddress' in client) {
+        // @ts-ignore - viem client has getEnsAddress on mainnet only
+        const addr = await client.getEnsAddress({ name: trimmed });
+        return addr ? (getAddress(addr) as `0x${string}`) : null;
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+// Risk heuristics (simple; you can refine later)
+function classifyRisk(raw: bigint, decimals: number) {
+  if (raw === maxUint256) return 'high' as RiskLevel;
+  // >= 1000 units => medium, >0 => low
+  const thousand = BigInt(10) ** BigInt(decimals) * 1000n;
+  if (raw >= thousand) return 'medium' as RiskLevel;
+  if (raw > 0n) return 'low' as RiskLevel;
+  return 'info' as RiskLevel;
+}
+
+// ---- Page ----
+type ChainChoice = 'all' | number;
+
+export default function HomePage() {
+  // UI state
+  const [rawInput, setRawInput] = useState<string>('');
+  const [owner, setOwner] = useState<`0x${string}` | null>(null);
+
+  const [chainChoice, setChainChoice] = useState<ChainChoice>('all'); // default = all chains
   const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string>('');
+
   const [findings, setFindings] = useState<Finding[]>([]);
-  const [error, setError] = useState<string | null>(null);
 
-  // Build a user-friendly chain list from your CHAINS map
-  const chainsList: ChainListItem[] = useMemo(() => {
-    const items: ChainListItem[] = Object.entries(CHAINS).map(([k, v]) => {
-      const name = (v as any)?.name ?? `Chain ${k}`;
-      return { id: Number(k), name };
-    });
-    // sort by name asc, put mainnet first if present
-    items.sort((a, b) => a.name.localeCompare(b.name));
-    return items;
-  }, []);
+  // Build chain list once
+  const chainsList = useMemo(
+    () =>
+      Object.entries(CHAINS).map(([id, cfg]) => ({
+        id: Number(id),
+        name: (cfg as any).name ?? `Chain ${id}`,
+      })),
+    []
+  );
 
-  const ownerInput = (input || connectedAddress || '').trim();
-
-  async function scan() {
-    setError(null);
-    setFindings([]);
-    if (!ownerInput) {
-      setError('Enter a wallet address or connect a wallet.');
-      return;
-    }
-    if (!isAddress(ownerInput)) {
-      setError('That does not look like a valid EVM address.');
-      return;
-    }
-
-    const owner = getAddress(ownerInput) as `0x${string}`;
-    const chainIds =
-      selectedChainId === 0
-        ? (Object.keys(CHAINS).map((k) => Number(k)) as number[])
-        : [selectedChainId];
-
+  const onScan = useCallback(async () => {
     setLoading(true);
+    setErr('');
+    setFindings([]);
 
     try {
-      const all: Finding[] = [];
+      const resolved = await resolveOwner(rawInput);
+      if (!resolved) {
+        setErr('Please enter a valid EVM address or ENS.');
+        setLoading(false);
+        return;
+      }
+      setOwner(resolved);
 
-      for (const cid of chainIds) {
+      const ids: number[] =
+        chainChoice === 'all'
+          ? Object.keys(CHAINS).map(Number)
+          : [chainChoice as number];
+
+      const out: Finding[] = [];
+
+      for (const cid of ids) {
         const chainCfg = (CHAINS as any)[cid];
-        if (!chainCfg) continue;
-
-        const chainName: string = chainCfg.name ?? `Chain ${cid}`;
         const client = getPublicClient(cid);
-
-        const tokens: Array<{ address: `0x${string}`; symbol: string; decimals: number }> =
-          (TOKENS_BY_CHAIN as any)[cid] ?? [];
-        const spenders: Array<{ address: `0x${string}`; name?: string }> =
-          (SPENDERS_BY_CHAIN as any)[cid] ?? [];
-
-        if (!tokens.length || !spenders.length) {
-          // No config for this chain; skip silently (or set a soft note).
+        if (!client) {
+          // Collect error but continue scanning other chains
+          setErr((prev) => (prev ? prev + '\n' : '') + `No RPC configured for chain ${cid}`);
           continue;
         }
 
-        // Build multicall set: for each token x spender: allowance(owner, spender)
-        const calls = [];
-        for (const t of tokens) {
-          for (const s of spenders) {
-            calls.push({
-              address: t.address,
-              abi: ERC20_ABI,
-              functionName: 'allowance' as const,
-              args: [owner, s.address],
-            });
-          }
-        }
+        const tokens = (TOKENS_BY_CHAIN as any)[cid] ?? [];
+        const spenders = (SPENDERS_BY_CHAIN as any)[cid] ?? [];
 
-        // Fallback: if client.multicall not available in your wrapper, sequentially read
-        let results: Array<{ result?: bigint | null }> = [];
-        if (typeof (client as any).multicall === 'function') {
-          const mc = await (client as any).multicall({ contracts: calls });
-          results = mc as Array<{ result?: bigint | null }>;
-        } else {
-          for (const c of calls) {
+        for (const t of tokens) {
+          const tokenAddr = t.address as `0x${string}`;
+          const sym = t.symbol as string;
+          const decimals = Number(t.decimals ?? 18);
+
+          for (const s of spenders) {
+            const spender = getAddress(s.address) as `0x${string}`;
+
+            let raw: bigint = 0n;
             try {
-              const r = await (client as any).readContract(c);
-              results.push({ result: r as bigint });
-            } catch {
-              results.push({ result: null });
+              raw = (await client.readContract({
+                address: tokenAddr,
+                abi: ERC20_ABI as any,
+                functionName: 'allowance',
+                args: [resolved, spender],
+              })) as bigint;
+            } catch (e) {
+              // Skip this pair but keep going
+              continue;
             }
-          }
-        }
 
-        // Map back results
-        let idx = 0;
-        for (const t of tokens) {
-          for (const s of spenders) {
-            const r = results[idx++]?.result ?? 0n;
-            if (r > 0n) {
-              const pretty =
-                r === maxUint256
-                  ? 'Unlimited'
-                  : `${prettyAmount(formatUnits(r, t.decimals))} ${t.symbol}`;
-
-              all.push({
+            if (raw > 0n) {
+              const amount = formatUnits(raw, decimals);
+              const risk = classifyRisk(raw, decimals);
+              out.push({
                 chainId: cid,
-                chain: chainName,
-                token: t.symbol,
-                tokenAddress: t.address,
-                spender: s.address,
-                spenderName: s.name,
-                allowance: pretty,
+                chain: chainCfg?.name ?? `Chain ${cid}`,
+                token: sym,
+                tokenAddress: tokenAddr,
+                spender,
+                spenderName: s.name as string | undefined,
+                allowance: `${amount} ${sym}`,
+                risk,
               });
             }
           }
         }
       }
 
-      // Sort by chain then token for stability
-      all.sort((a, b) => (a.chain === b.chain ? a.token.localeCompare(b.token) : a.chain.localeCompare(b.chain)));
-      setFindings(all);
+      setFindings(out);
     } catch (e: any) {
-      setError(e?.message || 'Scan failed.');
+      setErr(e?.message ?? String(e));
     } finally {
       setLoading(false);
     }
-  }
+  }, [rawInput, chainChoice]);
 
   return (
     <>
       <Head>
-        <title>Allowance Watch</title>
+        <title>CoinIntel Pro — Allowance Watch</title>
         <meta name="viewport" content="width=device-width, initial-scale=1" />
       </Head>
 
-      <main className="wrap">
+      <main className="wrap" style={{ paddingBottom: 40 }}>
         {/* Header */}
-        <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
-          <Brand subtitle="Allowance Watch" />
-          <ConnectButton />
+        <div className="row" style={{ alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+          <Brand subtitle="Allowance Watch" size="lg" />
+          <div className="row" style={{ gap: 10 }}>
+            <ThemeToggle />
+            <ConnectButton />
+          </div>
         </div>
 
-        {/* Controls */}
-        <div className="card" style={{ marginTop: 12 }}>
-          <div className="row" style={{ gap: 12, alignItems: 'center' }}>
+        {/* Lead copy */}
+        <p className="lead" style={{ marginTop: 12 }}>
+          Scan ERC-20 allowances across Base, Arbitrum, BNB, Avalanche, Polygon, Optimism, and Ethereum.
+          Revoke directly from results.
+        </p>
+
+        {/* Card */}
+        <div className="card" style={{ marginTop: 16 }}>
+          <div className="row" style={{ gap: 12, alignItems: 'flex-end' }}>
             <div className="col">
-              <label className="label">Wallet Address</label>
+              <label className="lbl">Wallet Address</label>
               <input
-                className="input"
-                placeholder="0x… or connect"
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
+                className="inp"
+                type="text"
+                placeholder="0x… or ENS (name.eth)"
+                value={rawInput}
+                onChange={(e) => setRawInput(e.target.value)}
                 inputMode="text"
+                spellCheck={false}
                 autoCapitalize="off"
                 autoCorrect="off"
-                spellCheck={false}
               />
-              <div className="hint">Connected: {connectedAddress ? getAddress(connectedAddress) : '—'}</div>
+              <div className="row" style={{ gap: 14, marginTop: 8 }}>
+                {/* These components existed previously; we keep them visible.
+                   We use ts-ignore to avoid breaking on prop signature drift. */}
+                {/* @ts-ignore */}
+                <SaveAddressButton address={owner ?? undefined} />
+                {/* @ts-ignore */}
+                <AddressBook onSelect={(addr: string) => setRawInput(addr)} />
+                {/* @ts-ignore */}
+                <RecentAddresses onPick={(addr: string) => setRawInput(addr)} />
+              </div>
             </div>
 
             <div>
-              <label className="label">Chain</label>
+              <label className="lbl">Chain</label>
               <select
-                className="select"
-                value={selectedChainId}
-                onChange={(e) => setSelectedChainId(Number(e.target.value))}
+                className="inp"
+                value={chainChoice}
+                onChange={(e) => {
+                  const v = e.target.value === 'all' ? 'all' : Number(e.target.value);
+                  setChainChoice(v);
+                }}
               >
-                <option value={0}>All supported</option>
+                <option value="all">All supported</option>
                 {chainsList.map((c) => (
                   <option key={c.id} value={c.id}>
                     {c.name}
@@ -202,16 +252,22 @@ export default function Home() {
               </select>
             </div>
 
-            <div style={{ alignSelf: 'flex-end' }}>
-              <button className="btn" onClick={scan} disabled={loading}>
+            <div>
+              <button className="btn" onClick={onScan} disabled={loading}>
                 {loading ? 'Scanning…' : 'Scan'}
               </button>
             </div>
           </div>
 
-          {error && (
-            <div className="alert" role="alert" style={{ marginTop: 12 }}>
-              {error}
+          {/* Status */}
+          {owner && (
+            <div className="muted" style={{ marginTop: 10 }}>
+              Resolved: <code>{short(owner)}</code>
+            </div>
+          )}
+          {err && (
+            <div className="alert error" style={{ marginTop: 12, whiteSpace: 'pre-wrap' }}>
+              {err}
             </div>
           )}
         </div>
