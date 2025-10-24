@@ -1,52 +1,54 @@
-import React, { useEffect, useState } from 'react';
+// components/ThemeToggle.tsx
+import { useEffect, useState } from 'react';
 
-type Theme = 'light' | 'dark' | 'system';
+type Mode = 'system' | 'light' | 'dark';
+const KEY = 'aw_theme';
+
+function applyTheme(mode: Mode) {
+  const root = document.documentElement;
+  const sysDark = window.matchMedia?.('(prefers-color-scheme: dark)').matches;
+  const isDark = mode === 'dark' || (mode === 'system' && sysDark);
+  root.classList.toggle('theme-dark', isDark);
+  root.classList.toggle('theme-light', !isDark);
+}
 
 export default function ThemeToggle() {
-  const [theme, setTheme] = useState<Theme>('system');
+  const [mode, setMode] = useState<Mode>('system');
 
   useEffect(() => {
-    try {
-      const saved = (localStorage.getItem('theme') as Theme) || 'system';
-      setTheme(saved);
-      apply(saved);
-    } catch {}
+    const stored = (localStorage.getItem(KEY) as Mode) || 'system';
+    setMode(stored);
+    applyTheme(stored);
   }, []);
 
-  function apply(next: Theme) {
-    try {
-      let finalTheme = next;
-      if (next === 'system') {
-        const dark = window.matchMedia?.('(prefers-color-scheme: dark)').matches;
-        finalTheme = dark ? 'dark' : 'light';
-      }
-      document.documentElement.setAttribute('data-theme', finalTheme);
-    } catch {}
-  }
-
-  function update(next: Theme) {
-    setTheme(next);
-    try { localStorage.setItem('theme', next); } catch {}
-    apply(next);
-  }
+  useEffect(() => {
+    localStorage.setItem(KEY, mode);
+    applyTheme(mode);
+  }, [mode]);
 
   return (
-    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }} title="Theme">
+    <div className="segmented">
       <button
-        className="btn"
-        style={{ height: 36, padding: '0 10px', opacity: theme==='light'?1:0.8 }}
-        onClick={() => update('light')}
-      >Light</button>
+        className={mode === 'light' ? 'active' : ''}
+        onClick={() => setMode('light')}
+        aria-pressed={mode === 'light'}
+      >
+        Light
+      </button>
       <button
-        className="btn"
-        style={{ height: 36, padding: '0 10px', opacity: theme==='dark'?1:0.8 }}
-        onClick={() => update('dark')}
-      >Dark</button>
+        className={mode === 'dark' ? 'active' : ''}
+        onClick={() => setMode('dark')}
+        aria-pressed={mode === 'dark'}
+      >
+        Dark
+      </button>
       <button
-        className="btn"
-        style={{ height: 36, padding: '0 10px', opacity: theme==='system'?1:0.8 }}
-        onClick={() => update('system')}
-      >System</button>
+        className={mode === 'system' ? 'active' : ''}
+        onClick={() => setMode('system')}
+        aria-pressed={mode === 'system'}
+      >
+        System
+      </button>
     </div>
   );
-      }
+}
