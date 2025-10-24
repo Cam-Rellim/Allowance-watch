@@ -33,8 +33,8 @@ export default function Brand({ subtitle, size = 'md' }: Props) {
             fontSize: s.title,
             lineHeight: 1,
             letterSpacing: 0.2,
-            // gradient that reads well on light/dark
-            backgroundImage: 'linear-gradient(90deg,#dbeafe,#3b82f6 50%,#dbeafe)',
+            // gradient now starts at the very left and reads well in light/dark
+            backgroundImage: 'linear-gradient(90deg,#60a5fa 0%, #3b82f6 60%, #93c5fd 100%)',
             WebkitBackgroundClip: 'text',
             color: 'transparent',
           } as React.CSSProperties}
@@ -49,4 +49,4 @@ export default function Brand({ subtitle, size = 'md' }: Props) {
       </div>
     </div>
   );
-}
+      }
