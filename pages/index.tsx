@@ -1,186 +1,165 @@
+import React, { useEffect, useMemo, useState } from 'react';
 import Head from 'next/head';
-import React, { useCallback, useMemo, useState } from 'react';
-import { isAddress, getAddress, formatUnits, maxUint256 } from 'viem';
-
 import Brand from '../components/Brand';
 import ThemeToggle from '../components/ThemeToggle';
 import ConnectButton from '../components/ConnectButton';
 import SummaryBar from '../components/SummaryBar';
 import Results from '../components/Results';
-import SaveAddressButton from '../components/SaveAddressButton';
-import AddressBook from '../components/AddressBook';
-import RecentAddresses from '../components/RecentAddresses';
 
+// We keep these imports exactly as your repo has them
 import { getPublicClient } from '../lib/networks';
 import { ERC20_ABI } from '../lib/erc20';
-
 import { CHAINS } from '../config/chains';
 import { TOKENS_BY_CHAIN } from '../config/tokens';
 import { SPENDERS_BY_CHAIN } from '../config/spenders';
 
-// ---- Types (local superset so we stay compatible with both components) ----
-type RiskLevel = 'high' | 'medium' | 'low' | 'info';
+import { formatUnits, isAddress, maxUint256, type Address, getAddress } from 'viem';
 
+/** Local Finding shape used by this page (kept structural so other component types don’t clash) */
 type Finding = {
-  chainId: number;
+  chainId?: number;
   chain: string;
   token: string;
-  tokenAddress?: `0x${string}`;
-  spender: `0x${string}`;
+  tokenAddress?: Address;
+  spender: Address;
   spenderName?: string;
-  allowance: string; // human formatted
-  risk: RiskLevel;
+  allowance: string;   // human string
+  risk: 'unlimited' | 'high' | 'medium' | 'low' | 'info';
 };
 
-// ---- Helpers ----
-function short(addr: string, left = 6, right = 4) {
-  if (!addr) return '';
-  return addr.slice(0, left) + '…' + addr.slice(-right);
-}
+// helper to list selectable chains
+const chainsList = Object.entries(CHAINS).map(([id, c]) => ({
+  id: Number(id),
+  name: c.name,
+}));
 
-async function resolveOwner(input: string): Promise<`0x${string}` | null> {
-  const trimmed = input.trim();
-  if (!trimmed) return null;
+export default function Home() {
+  // ---------- UI state ----------
+  const [input, setInput] = useState<string>('');
+  const [selectedChain, setSelectedChain] = useState<'all' | number>('all'); // default = All supported
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  // Try EVM address (lenient), then checksum it
-  if (isAddress(trimmed, { strict: false })) {
+  // findings kept untyped here to avoid cross-module type mismatches
+  const [findings, setFindings] = useState<Finding[]>([]);
+
+  // ---------- derived ----------
+  const validChecksum: Address | null = useMemo(() => {
+    if (!input) return null;
     try {
-      return getAddress(trimmed);
+      if (!isAddress(input as Address)) return null;
+      return getAddress(input as Address);
     } catch {
       return null;
     }
-  }
+  }, [input]);
 
-  // Optional ENS resolution against mainnet, if available
-  try {
-    if (trimmed.endsWith('.eth')) {
-      const mainnetId = 1;
-      const client = getPublicClient(mainnetId);
-      if (client && 'getEnsAddress' in client) {
-        // @ts-ignore - viem client has getEnsAddress on mainnet only
-        const addr = await client.getEnsAddress({ name: trimmed });
-        return addr ? (getAddress(addr) as `0x${string}`) : null;
-      }
-    }
-  } catch {
-    /* ignore */
-  }
-  return null;
-}
-
-// Risk heuristics (simple; you can refine later)
-function classifyRisk(raw: bigint, decimals: number) {
-  if (raw === maxUint256) return 'high' as RiskLevel;
-  // >= 1000 units => medium, >0 => low
-  const thousand = BigInt(10) ** BigInt(decimals) * 1000n;
-  if (raw >= thousand) return 'medium' as RiskLevel;
-  if (raw > 0n) return 'low' as RiskLevel;
-  return 'info' as RiskLevel;
-}
-
-// ---- Page ----
-type ChainChoice = 'all' | number;
-
-export default function HomePage() {
-  // UI state
-  const [rawInput, setRawInput] = useState<string>('');
-  const [owner, setOwner] = useState<`0x${string}` | null>(null);
-
-  const [chainChoice, setChainChoice] = useState<ChainChoice>('all'); // default = all chains
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState<string>('');
-
-  const [findings, setFindings] = useState<Finding[]>([]);
-
-  // Build chain list once
-  const chainsList = useMemo(
-    () =>
-      Object.entries(CHAINS).map(([id, cfg]) => ({
-        id: Number(id),
-        name: (cfg as any).name ?? `Chain ${id}`,
-      })),
-    []
-  );
-
-  const onScan = useCallback(async () => {
-    setLoading(true);
-    setErr('');
+  // ---------- scan logic ----------
+  async function scan() {
+    setError(null);
     setFindings([]);
 
+    if (!validChecksum) {
+      setError('Please enter a valid EVM address (0x… or checksummed).');
+      return;
+    }
+
+    setLoading(true);
     try {
-      const resolved = await resolveOwner(rawInput);
-      if (!resolved) {
-        setErr('Please enter a valid EVM address or ENS.');
-        setLoading(false);
-        return;
-      }
-      setOwner(resolved);
+      const chainIds: number[] =
+        selectedChain === 'all'
+          ? chainsList.map((c) => c.id)
+          : [selectedChain];
 
-      const ids: number[] =
-        chainChoice === 'all'
-          ? Object.keys(CHAINS).map(Number)
-          : [chainChoice as number];
+      const all: Finding[] = [];
 
-      const out: Finding[] = [];
-
-      for (const cid of ids) {
+      for (const cid of chainIds) {
         const chainCfg = (CHAINS as any)[cid];
+        if (!chainCfg) continue;
+
         const client = getPublicClient(cid);
         if (!client) {
-          // Collect error but continue scanning other chains
-          setErr((prev) => (prev ? prev + '\n' : '') + `No RPC configured for chain ${cid}`);
+          // skip silently, but surface as a banner if *only* one was selected
+          if (selectedChain !== 'all') {
+            setError(`No RPC configured for chain ${cid}.`);
+          }
           continue;
         }
 
         const tokens = (TOKENS_BY_CHAIN as any)[cid] ?? [];
         const spenders = (SPENDERS_BY_CHAIN as any)[cid] ?? [];
+        if (!tokens.length || !spenders.length) continue;
 
         for (const t of tokens) {
-          const tokenAddr = t.address as `0x${string}`;
-          const sym = t.symbol as string;
-          const decimals = Number(t.decimals ?? 18);
-
           for (const s of spenders) {
-            const spender = getAddress(s.address) as `0x${string}`;
-
-            let raw: bigint = 0n;
             try {
-              raw = (await client.readContract({
-                address: tokenAddr,
+              const value = (await client.readContract({
+                address: t.address as Address,
                 abi: ERC20_ABI as any,
                 functionName: 'allowance',
-                args: [resolved, spender],
+                args: [validChecksum, s.address as Address],
               })) as bigint;
-            } catch (e) {
-              // Skip this pair but keep going
-              continue;
-            }
 
-            if (raw > 0n) {
-              const amount = formatUnits(raw, decimals);
-              const risk = classifyRisk(raw, decimals);
-              out.push({
+              if (value <= 0n) continue;
+
+              const human = formatUnits(value, t.decimals ?? 18);
+
+              // classify risk
+              let risk: Finding['risk'] = 'info';
+              if (value === maxUint256) risk = 'unlimited';
+              else if (value >= 1_000_000n * 10n ** BigInt(t.decimals ?? 18)) risk = 'high';
+              else if (value >= 100_000n * 10n ** BigInt(t.decimals ?? 18)) risk = 'medium';
+              else risk = 'low';
+
+              all.push({
                 chainId: cid,
-                chain: chainCfg?.name ?? `Chain ${cid}`,
-                token: sym,
-                tokenAddress: tokenAddr,
-                spender,
-                spenderName: s.name as string | undefined,
-                allowance: `${amount} ${sym}`,
+                chain: chainCfg.name,
+                token: t.symbol || 'TOKEN',
+                tokenAddress: t.address as Address,
+                spender: s.address as Address,
+                spenderName: s.name,
+                allowance: human,
                 risk,
               });
+            } catch {
+              // ignore individual read errors for robustness
             }
           }
         }
       }
 
-      setFindings(out);
+      setFindings(all);
     } catch (e: any) {
-      setErr(e?.message ?? String(e));
+      setError(e?.message || 'Unexpected error while scanning.');
     } finally {
       setLoading(false);
     }
-  }, [rawInput, chainChoice]);
+  }
+
+  // convenience for Enter key
+  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') scan();
+  };
+
+  // lightweight “save” + “address book” using localStorage (keeps your buttons functional)
+  const saveCurrent = () => {
+    if (!validChecksum) return setError('Enter a valid address before saving.');
+    const raw = localStorage.getItem('aw:recent') || '[]';
+    const arr: string[] = JSON.parse(raw);
+    const next = [validChecksum, ...arr.filter((a) => a.toLowerCase() !== validChecksum.toLowerCase())].slice(0, 8);
+    localStorage.setItem('aw:recent', JSON.stringify(next));
+  };
+
+  const openAddressBook = () => {
+    try {
+      const raw = localStorage.getItem('aw:recent') || '[]';
+      const arr: string[] = JSON.parse(raw);
+      const pick = prompt(`Recent addresses:\n\n${arr.map((a, i) => `${i + 1}. ${a}`).join('\n')}\n\nType exact address to use:`);
+      if (pick && isAddress(pick as Address)) setInput(getAddress(pick as Address));
+    } catch {
+      // ignore
+    }
+  };
 
   return (
     <>
@@ -189,94 +168,86 @@ export default function HomePage() {
         <meta name="viewport" content="width=device-width, initial-scale=1" />
       </Head>
 
-      <main className="wrap" style={{ paddingBottom: 40 }}>
+      <main className="wrap">
         {/* Header */}
-        <div className="row" style={{ alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+        <div className="topbar">
           <Brand subtitle="Allowance Watch" size="lg" />
-          <div className="row" style={{ gap: 10 }}>
+          <div className="actions">
             <ThemeToggle />
             <ConnectButton />
           </div>
         </div>
 
-        {/* Lead copy */}
-        <p className="lead" style={{ marginTop: 12 }}>
-          Scan ERC-20 allowances across Base, Arbitrum, BNB, Avalanche, Polygon, Optimism, and Ethereum.
-          Revoke directly from results.
-        </p>
-
-        {/* Card */}
+        {/* Input Panel */}
         <div className="card" style={{ marginTop: 16 }}>
-          <div className="row" style={{ gap: 12, alignItems: 'flex-end' }}>
-            <div className="col">
-              <label className="lbl">Wallet Address</label>
+          <div className="row" style={{ gap: 12, flexWrap: 'wrap' }}>
+            <div className="col" style={{ flex: 1, minWidth: 240 }}>
+              <label className="muted">Wallet Address</label>
               <input
-                className="inp"
-                type="text"
+                className="input"
                 placeholder="0x… or ENS (name.eth)"
-                value={rawInput}
-                onChange={(e) => setRawInput(e.target.value)}
+                value={input}
+                onChange={(e) => setInput(e.target.value.trim())}
+                onKeyDown={onKeyDown}
                 inputMode="text"
-                spellCheck={false}
-                autoCapitalize="off"
+                autoCapitalize="none"
                 autoCorrect="off"
+                spellCheck={false}
               />
-              <div className="row" style={{ gap: 14, marginTop: 8 }}>
-                {/* These components existed previously; we keep them visible.
-                   We use ts-ignore to avoid breaking on prop signature drift. */}
-                {/* @ts-ignore */}
-                <SaveAddressButton address={owner ?? undefined} />
-                {/* @ts-ignore */}
-                <AddressBook onSelect={(addr: string) => setRawInput(addr)} />
-                {/* @ts-ignore */}
-                <RecentAddresses onPick={(addr: string) => setRawInput(addr)} />
+
+              <div className="row" style={{ gap: 10, marginTop: 4, flexWrap: 'wrap' }}>
+                <button className="btn secondary" onClick={saveCurrent}>★&nbsp;Save</button>
+                <button className="btn" onClick={openAddressBook}>Address Book</button>
               </div>
             </div>
 
-            <div>
-              <label className="lbl">Chain</label>
+            <div className="col" style={{ width: 260, minWidth: 220 }}>
+              <label className="muted">Chain</label>
               <select
-                className="inp"
-                value={chainChoice}
+                className="select"
+                value={selectedChain === 'all' ? 'all' : String(selectedChain)}
                 onChange={(e) => {
-                  const v = e.target.value === 'all' ? 'all' : Number(e.target.value);
-                  setChainChoice(v);
+                  const v = e.target.value;
+                  setSelectedChain(v === 'all' ? 'all' : Number(v));
                 }}
               >
                 <option value="all">All supported</option>
                 {chainsList.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
+                  <option key={c.id} value={c.id}>{c.name}</option>
                 ))}
               </select>
-            </div>
 
-            <div>
-              <button className="btn" onClick={onScan} disabled={loading}>
+              <button
+                className="btn"
+                style={{ marginTop: 8 }}
+                onClick={scan}
+                disabled={loading}
+                aria-busy={loading}
+              >
                 {loading ? 'Scanning…' : 'Scan'}
               </button>
             </div>
           </div>
 
-          {/* Status */}
-          {owner && (
-            <div className="muted" style={{ marginTop: 10 }}>
-              Resolved: <code>{short(owner)}</code>
-            </div>
-          )}
-          {err && (
-            <div className="alert error" style={{ marginTop: 12, whiteSpace: 'pre-wrap' }}>
-              {err}
+          {error && (
+            <div className="alert-danger" style={{ marginTop: 12 }}>
+              {error}
             </div>
           )}
         </div>
 
-        {/* Summary + Results */}
+        {/* Metrics + Results */}
         <div style={{ marginTop: 14 }}>
-          <SummaryBar findings={findings} loading={loading} />
-          <Results findings={findings} />
+          <SummaryBar findings={findings as any} loading={loading} />
+          <Results findings={findings as any} />
         </div>
+
+        {/* Footnote */}
+        <p className="footnote muted">
+          <span className="kicker">Note:</span>
+          Results are fetched from on-chain RPCs and best-effort token/spender maps.
+          Always verify approvals before revoking. If a chain is rate-limited, try again or scan a single chain.
+        </p>
       </main>
     </>
   );
