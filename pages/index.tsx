@@ -1,223 +1,233 @@
+// pages/index.tsx
 import Head from 'next/head';
-import React, { useMemo, useState } from 'react';
-import { isAddress, getAddress, type Address } from 'viem';
-
-import { ERC20_ABI } from '../lib/erc20';
-import { getPublicClient } from '../lib/networks';
-import { CHAINS, DEFAULT_CHAIN_ID } from '../config/chains';
-import { TOKENS_BY_CHAIN } from '../config/tokens';
-import { SPENDERS_BY_CHAIN } from '../config/spenders';
-
+import { useEffect, useMemo, useState } from 'react';
+import ThemeToggle from '../components/ThemeToggle';
 import ConnectButton from '../components/ConnectButton';
 import Brand from '../components/Brand';
-import SaveAddressButton from '../components/SaveAddressButton';
-import AddressBook from '../components/AddressBook';
-import SummaryBar from '../components/SummaryBar';
-import Results, { type Finding as ResultsFinding } from '../components/Results';
-import ThemeToggle from '../components/ThemeToggle';
-import RecentAddresses, { pushRecentAddress } from '../components/RecentAddresses';
+import SummaryBar, { type Finding } from '../components/SummaryBar';
+import Results from '../components/Results';
 
-// ---- local shapes ----
-type Token = { address: Address; symbol: string; decimals: number };
-type Spender = { address: Address; name: string };
-type Finding = ResultsFinding;
+import { getPublicClient } from '../lib/networks';
+import { ERC20_ABI } from '../lib/erc20';
+import { normalizeInputToAddressOrEns } from '../lib/addr';
 
-function prettyAmount(raw: bigint, decimals: number) {
-  if (raw === 0n) return '0';
-  const neg = raw < 0n ? '-' : '';
-  const val = raw < 0n ? -raw : raw;
-  const s = val.toString().padStart(decimals + 1, '0');
-  const head = s.slice(0, -decimals);
-  const tail = s.slice(-decimals).replace(/0+$/, '');
-  return neg + (tail ? `${head}.${tail}` : head);
+import { TOKENS_BY_CHAIN } from '../config/tokens';
+import { SPENDERS_BY_CHAIN } from '../config/spenders';
+import { CHAINS } from '../config/chains';
+
+type BookItem = { address: `0x${string}`; name?: string };
+
+const RECENT_KEY = 'aw_recent';
+const BOOK_KEY = 'aw_book';
+
+function loadRecent(): string[] {
+  try { return JSON.parse(localStorage.getItem(RECENT_KEY) || '[]'); } catch { return []; }
+}
+function saveRecent(list: string[]) {
+  localStorage.setItem(RECENT_KEY, JSON.stringify(list.slice(0, 8)));
+}
+function loadBook(): Record<string, BookItem> {
+  try { return JSON.parse(localStorage.getItem(BOOK_KEY) || '{}'); } catch { return {}; }
+}
+function saveBook(book: Record<string, BookItem>) {
+  localStorage.setItem(BOOK_KEY, JSON.stringify(book));
 }
 
 export default function Home() {
-  // form state
-  const [input, setInput] = useState('');
+  // ----- UI state
+  const [addrInput, setAddrInput] = useState('');
+  const [selectedChain, setSelectedChain] = useState<number>(8453); // Base default
   const [scanAll, setScanAll] = useState(true);
-  const [selectedChainId, setSelectedChainId] = useState<number>(DEFAULT_CHAIN_ID);
-
-  // results state
-  const [findings, setFindings] = useState<Finding[]>([]);
   const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const [failCount, setFailCount] = useState(0);
+  const [findings, setFindings] = useState<Finding[]>([]);
+  const [errors, setErrors] = useState<{ chain: string; msg: string }[]>([]);
+  const [recent, setRecent] = useState<string[]>([]);
+  const [book, setBook] = useState<Record<string, BookItem>>({});
+  const [bookOpen, setBookOpen] = useState(false);
 
-  // chains list (robust to shapes)
-  type SimpleChain = { id: number; name: string };
-  const chainsList: SimpleChain[] = useMemo(() => {
-    const vals = Object.values(CHAINS as any);
-    const list = vals.map((c: any) => ({
-      id: Number(c?.id ?? c),
-      name: String(c?.name ?? c),
-    }));
-    const seen = new Set<number>();
-    return list.filter((c) => !seen.has(c.id) && seen.add(c.id)).sort((a, b) => a.name.localeCompare(b.name));
+  // ----- Init persisted bits
+  useEffect(() => { setRecent(loadRecent()); setBook(loadBook()); }, []);
+
+  const chainOptions = useMemo(() => {
+    // CHAINS is Record<number, {id,name,...}>
+    return Object.values(CHAINS as Record<string, any>)
+      .map((c) => ({ id: Number(c.id ?? c.chainId ?? c), name: c.name ?? c.title ?? String(c.id) }))
+      .sort((a, b) => String(a.name).localeCompare(String(b.name)));
   }, []);
 
-  async function normalizeToAddress(text: string): Promise<Address> {
-    const t = text.trim();
-    if (isAddress(t)) return getAddress(t);
-    if (t.endsWith('.eth')) {
-      const client = getPublicClient(1);
-      const addr = await client.getEnsAddress({ name: t as any }).catch(() => null);
-      if (addr && isAddress(addr)) return getAddress(addr);
-    }
-    throw new Error('Please enter a valid EVM address.');
+  // ----- Helpers
+  function remember(addr: string) {
+    const next = [addr, ...recent.filter((a) => a.toLowerCase() !== addr.toLowerCase())];
+    setRecent(next);
+    saveRecent(next);
   }
 
-  function riskFrom(raw: bigint, decimals: number): 'high' | 'med' | 'low' {
-    const whole = Number(prettyAmount(raw, decimals).split('.')[0] || '0');
-    if (whole >= 1_000_000) return 'high';
-    if (whole >= 10_000) return 'med';
-    return 'low';
+  function saveCurrentToBook(addr: `0x${string}`) {
+    const name = prompt('Name this address (optional):') || undefined;
+    const next = { ...book, [addr.toLowerCase()]: { address: addr, name } };
+    setBook(next);
+    saveBook(next);
   }
 
-  async function handleScan() {
-    setErr(null);
+  async function scan() {
+    setErrors([]);
     setFindings([]);
-    setFailCount(0);
-
-    let owner: Address;
-    try {
-      owner = await normalizeToAddress(input);
-    } catch (e: any) {
-      setErr(e?.message || String(e));
-      return;
-    }
-
-    // store in recent chips
-    try { pushRecentAddress(owner); } catch {}
-
     setLoading(true);
     try {
-      const chainIds = scanAll ? chainsList.map((c) => c.id) : [selectedChainId];
-      const all: Finding[] = [];
-      let failures = 0;
+      const owner = await normalizeInputToAddressOrEns(addrInput);
+      remember(owner);
 
-      for (const chainId of chainIds) {
-        const tokens = (TOKENS_BY_CHAIN as any)[chainId] as Token[] | undefined;
-        const spenders = (SPENDERS_BY_CHAIN as any)[chainId] as Spender[] | undefined;
-        if (!tokens?.length || !spenders?.length) continue;
+      const targetChainIds = scanAll
+        ? Object.keys(CHAINS).map((k) => Number(k))
+        : [selectedChain];
 
-        const client = getPublicClient(chainId);
+      const allFindings: Finding[] = [];
 
+      for (const cid of targetChainIds) {
+        const cfg: any = (CHAINS as any)[cid];
+        const chainName = cfg?.name ?? `Chain ${cid}`;
+        const client = getPublicClient(cid);
+
+        const tokens = (TOKENS_BY_CHAIN as any)[cid] || [];
+        const spenders = (SPENDERS_BY_CHAIN as any)[cid] || [];
+        if (!tokens.length || !spenders.length) continue;
+
+        // build multicall list
         const contracts = [];
         for (const t of tokens) {
           for (const s of spenders) {
             contracts.push({
+              address: t.address as `0x${string}`,
               abi: ERC20_ABI,
-              address: t.address,
               functionName: 'allowance' as const,
-              args: [owner, s.address],
+              args: [owner, s.address as `0x${string}`],
             });
           }
         }
 
-        const res = await client.multicall({ contracts, allowFailure: true });
-
-        let i = 0;
-        for (const t of tokens) {
-          for (const s of spenders) {
-            const r = res[i++];
-            if (r.status === 'success') {
-              const raw = r.result as unknown as bigint;
+        try {
+          const res = await client.multicall({ contracts, allowFailure: true });
+          let idx = 0;
+          for (const t of tokens) {
+            for (const s of spenders) {
+              const out = res[idx++];
+              if (!out || out.status !== 'success') continue;
+              const raw = BigInt(out.result as unknown as string);
               if (raw > 0n) {
-                const chainCfg = (CHAINS as any)[chainId] ?? { id: chainId, name: String(chainId) };
-                const chainName = String(chainCfg.name ?? chainId);
-                all.push({
-                  chainId,
-                  chainName,
-                  token: t,
-                  spender: s,
-                  allowanceRaw: raw,
-                  allowancePretty: `${prettyAmount(raw, t.decimals)} ${t.symbol}`,
-                  risk: riskFrom(raw, t.decimals),
+                // format with token decimals if present
+                const d = Number(t.decimals ?? 18);
+                const pretty =
+                  Number(raw) === 0
+                    ? '0'
+                    : (Number(raw) / Math.pow(10, d)).toLocaleString(undefined, {
+                        maximumFractionDigits: 6,
+                      }) + ` ${t.symbol}`;
+                allFindings.push({
+                  chainId: cid,
+                  chain: chainName,
+                  token: t.symbol,
+                  spender: s.address,
+                  spenderName: s.name,
+                  allowance: pretty,
                 });
               }
-            } else {
-              failures++;
             }
           }
+        } catch (err: any) {
+          const msg = err?.shortMessage || err?.message || String(err);
+          setErrors((prev) => [...prev, { chain: chainName, msg }]);
         }
       }
 
-      setFindings(all);
-      setFailCount(failures);
-
-      if (all.length === 0 && failures === 0) {
-        // Transparent note: curated list limitation
-        setErr(
-          'No allowances found among the curated tokens/spenders scanned. This does not guarantee zero allowances overall. We’ll expand coverage next.'
-        );
-      }
+      setFindings(allFindings);
     } catch (e: any) {
-      setErr(e?.message || String(e));
+      alert(e?.message || String(e));
     } finally {
       setLoading(false);
     }
   }
 
+  // ----- Render
   return (
     <>
       <Head>
         <title>CoinIntel Pro — Allowance Watch</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
       </Head>
 
       <main className="wrap">
         {/* Header */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+        <div className="row space-between center">
           <Brand subtitle="Allowance Watch" />
-          <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+          <div className="row center" style={{ gap: 8 }}>
             <ThemeToggle />
             <ConnectButton />
           </div>
         </div>
 
-        <p style={{ marginTop: 12, opacity: 0.9 }}>
-          Scan ERC-20 allowances across Base, Arbitrum, BNB, Avalanche, Polygon, Optimism, and Ethereum. Revoke directly from results.
+        <p className="lede">
+          Scan ERC-20 allowances across Base, Arbitrum, BNB, Avalanche, Polygon, Optimism, and
+          Ethereum. Revoke directly from results.
         </p>
 
-        {/* Form */}
-        <section className="panel" style={{ marginTop: 14 }}>
-          <div className="row" style={{ alignItems: 'end' }}>
-            <div className="col">
-              <div className="label">Wallet address</div>
+        {/* Form card */}
+        <div className="card">
+          <div className="grid2">
+            <div>
+              <label className="label">Wallet address</label>
               <input
                 className="input"
                 placeholder="0x… or ENS (name.eth)"
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                spellCheck={false}
+                value={addrInput}
+                onChange={(e) => setAddrInput(e.target.value)}
               />
-              {/* Recent chips */}
-              <RecentAddresses onSelect={(addr) => setInput(addr)} />
+              {/* Recent */}
+              {recent.length > 0 && (
+                <div className="chips">
+                  {recent.map((a) => (
+                    <button key={a} className="chip" onClick={() => setAddrInput(a)}>
+                      {a.slice(0, 6)}…{a.slice(-4)}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <div className="row" style={{ gap: 10, marginTop: 6 }}>
+                <button
+                  className="linkish"
+                  onClick={async () => {
+                    try {
+                      const normalized = await normalizeInputToAddressOrEns(addrInput);
+                      saveCurrentToBook(normalized);
+                      alert('Saved to Address Book.');
+                    } catch (e: any) {
+                      alert(e?.message || String(e));
+                    }
+                  }}
+                >
+                  ★ Save
+                </button>
+                <button className="linkish" onClick={() => setBookOpen(true)}>
+                  Address Book
+                </button>
+              </div>
             </div>
 
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-              <SaveAddressButton address={input.trim()} />
-              <AddressBook onSelect={(addr) => setInput(addr)} />
-            </div>
-          </div>
-
-          <div className="row" style={{ marginTop: 12, alignItems: 'center' }}>
-            <div className="col">
-              <div className="label">Chain</div>
+            <div>
+              <label className="label">Chain</label>
               <select
-                className="select"
-                value={selectedChainId}
-                onChange={(e) => setSelectedChainId(Number(e.target.value))}
+                className="input"
+                value={selectedChain}
+                onChange={(e) => setSelectedChain(Number(e.target.value))}
                 disabled={scanAll}
               >
-                {chainsList.map((c) => (
-                  <option key={c.id} value={c.id}>{c.name}</option>
+                {chainOptions.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
                 ))}
               </select>
-            </div>
 
-            <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-              <label className="checkboxRow" title="Scan across all configured chains">
+              <label className="check">
                 <input
                   type="checkbox"
                   checked={scanAll}
@@ -225,47 +235,72 @@ export default function Home() {
                 />
                 <span>Scan all chains</span>
               </label>
-              <button className="btn" onClick={handleScan} disabled={loading}>
+
+              <button className="btn" onClick={scan} disabled={loading}>
                 {loading ? 'Scanning…' : 'Scan'}
               </button>
             </div>
           </div>
+        </div>
 
-          {failCount > 0 && (
-            <div
-              style={{
-                marginTop: 12,
-                padding: 12,
-                borderRadius: 10,
-                border: '1px solid #856404',
-                background: '#3a320f',
-              }}
-            >
-              {failCount} contract calls failed and were skipped. This can happen with unreliable RPCs; results still include all successful calls.
-            </div>
-          )}
+        {/* Errors per chain */}
+        {errors.map((er, i) => (
+          <div key={i} className="alert">
+            <strong>{er.chain}:</strong> {er.msg}
+          </div>
+        ))}
 
-          {err && (
-            <div
-              style={{
-                marginTop: 12,
-                padding: 12,
-                borderRadius: 10,
-                border: '1px solid #7a2b2b',
-                background: '#3a2222',
-              }}
-            >
-              {err}
-            </div>
-          )}
-        </section>
-
-        {/* Results */}
+        {/* Summary + Results */}
         <div style={{ marginTop: 14 }}>
           <SummaryBar findings={findings} loading={loading} />
           <Results findings={findings} />
         </div>
       </main>
+
+      {/* Address Book modal (very small & simple) */}
+      {bookOpen && (
+        <div className="modal-backdrop" onClick={() => setBookOpen(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3>Address Book</h3>
+            {!Object.keys(book).length && <p>No saved addresses yet.</p>}
+            {!!Object.keys(book).length && (
+              <ul className="book">
+                {Object.values(book).map((b) => (
+                  <li key={b.address.toLowerCase()}>
+                    <button
+                      className="chip"
+                      onClick={() => {
+                        setAddrInput(b.address);
+                        setBookOpen(false);
+                      }}
+                      title={b.address}
+                    >
+                      {b.name ? `${b.name} — ` : ''}
+                      {b.address.slice(0, 6)}…{b.address.slice(-4)}
+                    </button>
+                    <button
+                      className="linkish danger"
+                      onClick={() => {
+                        const next = { ...book };
+                        delete next[b.address.toLowerCase()];
+                        setBook(next);
+                        saveBook(next);
+                      }}
+                    >
+                      Delete
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <div className="row right">
+              <button className="btn" onClick={() => setBookOpen(false)}>
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }
